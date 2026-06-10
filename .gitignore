@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/uploads/
+data/pages/
+data/exports/
+# user content / runtime — not shipped with the repo
+data/templates/*.json
+# local editor / tool settings
+.claude/
