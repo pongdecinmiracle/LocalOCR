@@ -65,9 +65,12 @@ h3 { margin: 0 0 10px; font-size: 15px; }
 .row.between { justify-content: space-between; }
 .row.end { justify-content: flex-end; }
 label.block { display: block; margin: 10px 0; font-size: 13px; color: var(--muted); }
-input[type=text], select {
+input[type=text], input[type=password], select {
   width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px;
   background: #0f141a; border: 1px solid var(--border); color: var(--text); font-size: 14px;
+}
+input[type=text]:focus, input[type=password]:focus, select:focus {
+  outline: none; border-color: var(--accent);
 }
 .row select, .row input { width: auto; }
 
