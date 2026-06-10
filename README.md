@@ -76,6 +76,9 @@ acceleration, install the NVIDIA driver — Ollama detects the GPU automatically
 This starts Ollama (if needed), launches the server, and opens
 <http://127.0.0.1:8000>.
 
+**To stop it:** press **`Ctrl + C`** in the terminal, or run **`.\stop.ps1`**
+(or double-click **`stop.bat`**). Ollama is left running.
+
 ### Linux server
 
 ```bash
@@ -86,6 +89,9 @@ chmod +x run.sh        # first time only
 This starts Ollama if it isn't already running and launches the server on
 <http://127.0.0.1:8000>. It does **not** open a browser (servers are usually
 headless).
+
+**To stop it:** press **`Ctrl + C`**, or run **`./stop.sh`** (if running via
+systemd: `sudo systemctl stop localocr`).
 
 **To reach it from another machine**, bind to all interfaces:
 
