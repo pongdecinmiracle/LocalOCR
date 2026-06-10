@@ -3,15 +3,12 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const state = {
-  uploads: JSON.parse(localStorage.getItem("localocr_uploads") || "[]"),
+  user: null,
+  uploads: [],
   templates: [],
   editor: { docId: null, page: 0, template: { id: null, name: "", fields: [] }, selField: null },
   lastResults: null,
 };
-
-function saveUploads() {
-  localStorage.setItem("localocr_uploads", JSON.stringify(state.uploads));
-}
 
 /* ---------------- tabs ---------------- */
 $$(".tab").forEach((t) =>
@@ -76,12 +73,21 @@ async function uploadFiles(fileList) {
       return r.json();
     });
     res.uploads.forEach((u) => state.uploads.push(u));
-    saveUploads();
     renderUploads();
     $("#uploadProgress").textContent = `Done. ${res.uploads.length} added.`;
   } catch (e) {
     $("#uploadProgress").textContent = "Upload error: " + e.message;
   }
+}
+
+async function loadUploads() {
+  try {
+    const r = await fetch("/api/uploads").then((x) => x.json());
+    state.uploads = r.uploads || [];
+  } catch {
+    state.uploads = [];
+  }
+  renderUploads();
 }
 
 function renderUploads() {
@@ -98,9 +104,9 @@ function renderUploads() {
       <img src="${u.pages[0].url}" loading="lazy" />
       <div class="name">${u.filename}</div>
       <div class="meta">${u.pages.length} page(s) · <span class="link rm">remove</span></div>`;
-    tile.querySelector(".rm").addEventListener("click", () => {
+    tile.querySelector(".rm").addEventListener("click", async () => {
+      await fetch("/api/uploads/" + u.upload_id, { method: "DELETE" });
       state.uploads.splice(i, 1);
-      saveUploads();
       renderUploads();
     });
     wrap.appendChild(tile);
@@ -560,8 +566,76 @@ $("#exportBtn").addEventListener("click", async () => {
   $("#exportLink").innerHTML = `✓ <a class="link" href="/api/download/${res.filename}">Download ${res.filename}</a>`;
 });
 
-/* ---------------- init ---------------- */
-renderUploads();
-loadTemplates();
-loadStatus();
-setInterval(loadStatus, 8000);
+/* ---------------- auth ---------------- */
+let authMode = "login"; // or "register"
+let statusTimer = null;
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isLogin = mode === "login";
+  $("#authSubtitle").textContent = isLogin ? "Sign in to your account" : "Create a new account";
+  $("#authSubmit").textContent = isLogin ? "Sign in" : "Create account";
+  $("#authSwitchText").textContent = isLogin ? "New here?" : "Already have an account?";
+  $("#authToggle").textContent = isLogin ? "Create an account" : "Sign in";
+  $("#authPass").setAttribute("autocomplete", isLogin ? "current-password" : "new-password");
+  $("#authError").textContent = "";
+}
+$("#authToggle").addEventListener("click", () => setAuthMode(authMode === "login" ? "register" : "login"));
+
+$("#authForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = $("#authUser").value.trim();
+  const password = $("#authPass").value;
+  $("#authError").textContent = "";
+  $("#authSubmit").disabled = true;
+  try {
+    const r = await fetch("/api/" + (authMode === "login" ? "login" : "register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || "Something went wrong.");
+    }
+    const user = await r.json();
+    await enterApp(user);
+  } catch (err) {
+    $("#authError").textContent = err.message;
+  } finally {
+    $("#authSubmit").disabled = false;
+  }
+});
+
+$("#logoutBtn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  if (statusTimer) clearInterval(statusTimer);
+  location.reload();
+});
+
+async function enterApp(user) {
+  state.user = user;
+  $("#userName").textContent = user.username;
+  $("#userArea").classList.remove("hidden");
+  $("#authGate").classList.add("hidden");
+  $("#authUser").value = "";
+  $("#authPass").value = "";
+
+  await Promise.all([loadUploads(), loadTemplates()]);
+  loadStatus();
+  if (!statusTimer) statusTimer = setInterval(loadStatus, 8000);
+}
+
+/* ---------------- boot ---------------- */
+(async function boot() {
+  try {
+    const r = await fetch("/api/me");
+    if (r.ok) {
+      await enterApp(await r.json());
+      return;
+    }
+  } catch {}
+  setAuthMode("login");
+  $("#authGate").classList.remove("hidden");
+  $("#authUser").focus();
+})();

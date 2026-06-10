@@ -8,7 +8,27 @@ all running on your own machine via a local vision LLM.
 - **Engine:** [Ollama](https://ollama.com) + `qwen2.5vl:7b` (vision LLM), on your GPU.
 - **Backend:** Python + FastAPI (renders pages, calls the model, writes xlsx).
 - **Frontend:** a single-page browser UI with a canvas box editor. No build step.
+- **Accounts:** each user signs in; templates and uploaded documents are private
+  to that account.
 - **Nothing leaves your computer.**
+
+## User accounts
+
+LocalOCR has a built-in login system. On first visit you **create an account**
+(username + password), then sign in. Everything you upload and every template you
+build is **private to your account** — other users can't see your documents or
+templates.
+
+- Passwords are hashed (PBKDF2-HMAC-SHA256, per-user salt) — never stored in
+  plain text.
+- Sign-in uses a secure httpOnly session cookie that lasts 30 days.
+- Accounts and per-user data live under `data/` (see [Layout](#layout)); this
+  folder is git-ignored and never leaves your machine.
+
+> **Note on exposure:** the login protects access, but on a plain-HTTP server
+> passwords travel unencrypted. If you expose LocalOCR beyond localhost, put it
+> behind an **HTTPS reverse proxy** (or use an SSH tunnel). See
+> [Run · Linux server](#linux-server).
 
 ## How it works
 
@@ -101,10 +121,10 @@ LOCALOCR_HOST=0.0.0.0 ./run.sh
 
 Then browse to `http://<server-ip>:8000`.
 
-> ⚠️ **Security:** the app has no built-in authentication. Only bind to
-> `0.0.0.0` on a trusted/private network, or keep the default `127.0.0.1` and
-> reach it through an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 user@server`) or
-> behind a reverse proxy that adds auth.
+> ⚠️ **Security:** the app has username/password login, but on plain HTTP those
+> credentials travel unencrypted. When exposing it on `0.0.0.0`, put it behind an
+> **HTTPS reverse proxy**, or keep the default `127.0.0.1` and reach it through an
+> SSH tunnel (`ssh -L 8000:127.0.0.1:8000 user@server`).
 
 **Run it as a background service (systemd):** create
 `/etc/systemd/system/localocr.service` —
@@ -137,7 +157,14 @@ then `sudo systemctl enable --now localocr`.
 
 > 🇹🇭 ภาษาไทย: ดู [วิธีใช้งานแอปพลิเคชัน (ภาษาไทย)](#วิธีใช้งานแอปพลิเคชัน-ภาษาไทย) ด้านล่าง
 
-The app has three tabs across the top — work through them left to right.
+### Step 0 · Sign in
+
+The first time you open the app you'll see a sign-in screen. Click **Create an
+account**, choose a username and password, and submit — you're taken straight
+into the app. Next time, just **Sign in**. Your name appears top-right with a
+**Logout** button. Everything you do is saved to your account.
+
+The app then has three tabs across the top — work through them left to right.
 
 ### Step 1 · Documents — upload your files
 
@@ -220,7 +247,14 @@ removes the selected one.
 
 > 🇬🇧 English: see [How to use the application](#how-to-use-the-application) above.
 
-แอปนี้มี 3 แท็บอยู่ด้านบน ให้ทำงานไล่จากซ้ายไปขวา
+### ขั้นที่ 0 · เข้าสู่ระบบ (Sign in)
+
+เมื่อเปิดแอปครั้งแรกจะพบหน้าจอเข้าสู่ระบบ คลิก **Create an account** เพื่อสร้างบัญชี
+ตั้งชื่อผู้ใช้และรหัสผ่าน แล้วกดยืนยัน ระบบจะพาเข้าสู่แอปทันที ครั้งต่อไปเพียง **Sign in**
+ชื่อของคุณจะแสดงที่มุมขวาบนพร้อมปุ่ม **Logout** — ข้อมูลทุกอย่างจะถูกบันทึกไว้กับบัญชีของคุณ
+และเป็นส่วนตัวเฉพาะคุณเท่านั้น
+
+จากนั้นแอปจะมี 3 แท็บอยู่ด้านบน ให้ทำงานไล่จากซ้ายไปขวา
 
 ### ขั้นที่ 1 · Documents — อัปโหลดไฟล์ของคุณ
 
@@ -288,9 +322,15 @@ Environment variables (optional):
 ## Layout
 
 ```
-backend/    FastAPI app, rendering, Ollama client, extraction, Excel export
-frontend/   index.html + app.js + styles.css (the box editor UI)
-data/       uploads, rendered pages, templates (json), exports (xlsx)
+backend/    FastAPI app, auth, rendering, Ollama client, extraction, Excel export
+frontend/   index.html + app.js + styles.css (login gate + box editor UI)
+data/       runtime data (git-ignored):
+              users.json                      account records (hashed passwords)
+              secret.key                      session-signing key
+              users/<user_id>/templates/      that user's templates (json)
+              users/<user_id>/uploads/        that user's original files
+              users/<user_id>/pages/          rendered page images
+              users/<user_id>/exports/        generated xlsx files
 samples/    a generated sample invoice to try
 ```
 

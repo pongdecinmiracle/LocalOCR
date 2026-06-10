@@ -7,21 +7,12 @@ in-memory crops on demand during extraction.
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
 from PIL import Image
 
-from config import PAGES, RENDER_DPI
-
-
-@dataclass
-class PageInfo:
-    index: int
-    width: int   # pixels at RENDER_DPI
-    height: int
-    url: str     # web path to the rendered PNG
+from config import RENDER_DPI
 
 
 def _zoom_for_dpi(dpi: int) -> float:
@@ -29,41 +20,31 @@ def _zoom_for_dpi(dpi: int) -> float:
     return dpi / 72.0
 
 
-def render_document(upload_id: str, file_path: Path, dpi: int = RENDER_DPI) -> list[PageInfo]:
-    """Render every page of the document to PNG under data/pages/<upload_id>/.
+def render_document(file_path: Path, out_dir: Path, dpi: int = RENDER_DPI) -> list[dict]:
+    """Render every page of the document to page_<i>.png under out_dir.
 
-    Returns metadata for each page (pixel size + served URL).
+    Returns metadata for each page: {index, width, height} in pixels.
     """
-    out_dir = PAGES / upload_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     zoom = _zoom_for_dpi(dpi)
     matrix = fitz.Matrix(zoom, zoom)
 
-    pages: list[PageInfo] = []
+    pages: list[dict] = []
     doc = fitz.open(file_path)
     try:
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=matrix, alpha=False)
-            png_path = out_dir / f"page_{i}.png"
-            pix.save(png_path)
-            pages.append(
-                PageInfo(
-                    index=i,
-                    width=pix.width,
-                    height=pix.height,
-                    url=f"/data/pages/{upload_id}/page_{i}.png",
-                )
-            )
+            pix.save(out_dir / f"page_{i}.png")
+            pages.append({"index": i, "width": pix.width, "height": pix.height})
     finally:
         doc.close()
     return pages
 
 
-def load_page_image(upload_id: str, page_index: int) -> Image.Image:
-    """Load a previously rendered page as a PIL image."""
-    png_path = PAGES / upload_id / f"page_{page_index}.png"
-    return Image.open(png_path).convert("RGB")
+def load_page_image(pages_dir: Path, page_index: int) -> Image.Image:
+    """Load a previously rendered page (pages_dir/page_<i>.png) as a PIL image."""
+    return Image.open(pages_dir / f"page_{page_index}.png").convert("RGB")
 
 
 def crop_normalized(img: Image.Image, box: dict, pad: float = 0.004) -> Image.Image:

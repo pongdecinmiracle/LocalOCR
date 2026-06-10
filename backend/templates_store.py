@@ -1,7 +1,8 @@
-"""Simple JSON-file storage for layout templates.
+"""Per-user JSON-file storage for layout templates.
 
 A template captures named field boxes over a document layout so the same
-extraction can be replayed on future documents of the same kind.
+extraction can be replayed on future documents of the same kind. Templates are
+private to each user (stored under data/users/<user_id>/templates/).
 """
 from __future__ import annotations
 
@@ -9,9 +10,8 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-from config import TEMPLATES
+from config import user_templates
 
 
 def _slug(name: str) -> str:
@@ -19,9 +19,9 @@ def _slug(name: str) -> str:
     return s or "template"
 
 
-def list_templates() -> list[dict]:
+def list_templates(user_id: str) -> list[dict]:
     out = []
-    for f in sorted(TEMPLATES.glob("*.json")):
+    for f in sorted(user_templates(user_id).glob("*.json")):
         try:
             out.append(json.loads(f.read_text(encoding="utf-8")))
         except Exception:
@@ -30,14 +30,14 @@ def list_templates() -> list[dict]:
     return out
 
 
-def get_template(template_id: str) -> dict | None:
-    f = TEMPLATES / f"{template_id}.json"
+def get_template(user_id: str, template_id: str) -> dict | None:
+    f = user_templates(user_id) / f"{template_id}.json"
     if not f.exists():
         return None
     return json.loads(f.read_text(encoding="utf-8"))
 
 
-def save_template(data: dict) -> dict:
+def save_template(user_id: str, data: dict) -> dict:
     """Create or update a template. `data` must contain name + fields[]."""
     tid = data.get("id") or f"{_slug(data.get('name', 'template'))}_{uuid.uuid4().hex[:8]}"
     data["id"] = tid
@@ -68,14 +68,14 @@ def save_template(data: dict) -> dict:
         norm_fields.append(nf)
     data["fields"] = norm_fields
 
-    (TEMPLATES / f"{tid}.json").write_text(
+    (user_templates(user_id) / f"{tid}.json").write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return data
 
 
-def delete_template(template_id: str) -> bool:
-    f = TEMPLATES / f"{template_id}.json"
+def delete_template(user_id: str, template_id: str) -> bool:
+    f = user_templates(user_id) / f"{template_id}.json"
     if f.exists():
         f.unlink()
         return True

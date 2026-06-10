@@ -7,6 +7,28 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <!-- ============ AUTH GATE ============ -->
+  <div id="authGate" class="auth-gate">
+    <div class="auth-card">
+      <div class="auth-brand">📄 LocalOCR</div>
+      <p class="muted" id="authSubtitle">Sign in to your account</p>
+      <form id="authForm">
+        <label class="block">Username
+          <input id="authUser" type="text" autocomplete="username" placeholder="your username" />
+        </label>
+        <label class="block">Password
+          <input id="authPass" type="password" autocomplete="current-password" placeholder="your password" />
+        </label>
+        <div id="authError" class="auth-error"></div>
+        <button id="authSubmit" class="btn primary" type="submit">Sign in</button>
+      </form>
+      <p class="muted small auth-switch">
+        <span id="authSwitchText">New here?</span>
+        <button type="button" class="link" id="authToggle">Create an account</button>
+      </p>
+    </div>
+  </div>
+
   <header>
     <div class="brand">📄 LocalOCR</div>
     <nav class="tabs">
@@ -15,6 +37,10 @@
       <button class="tab" data-tab="run">3 · Extract &amp; Export</button>
     </nav>
     <div id="status" class="status" title="Engine status">checking…</div>
+    <div id="userArea" class="userarea hidden">
+      <span id="userName" class="username"></span>
+      <button id="logoutBtn" class="btn small">Logout</button>
+    </div>
   </header>
 
   <!-- ============ DOCUMENTS ============ -->

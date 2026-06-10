@@ -10,11 +10,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
-
-from config import EXPORTS
 
 _HEADER_FILL = PatternFill("solid", fgColor="305496")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -33,7 +33,7 @@ def _autosize(ws):
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(width + 3, 60)
 
 
-def export_results(template: dict, results: list[dict]) -> str:
+def export_results(template: dict, results: list[dict], exports_dir: Path) -> str:
     """results: [{"file": name, "fields": {...}}]. Returns the saved file path."""
     fields = template["fields"]
     scalar_fields = [f for f in fields if f["type"] != "table"]
@@ -71,6 +71,6 @@ def export_results(template: dict, results: list[dict]) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     safe = template.get("name", "export").replace(" ", "_")[:40]
     fname = f"{safe}_{stamp}_{uuid.uuid4().hex[:6]}.xlsx"
-    path = EXPORTS / fname
+    path = exports_dir / fname
     wb.save(path)
     return str(path)

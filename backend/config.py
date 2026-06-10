@@ -1,18 +1,50 @@
-"""Central configuration and on-disk paths for LocalOCR."""
+"""Central configuration and on-disk paths for LocalOCR.
+
+Storage is per-user: everything a user owns lives under
+data/users/<user_id>/{templates,uploads,pages,exports}/.
+"""
 import os
 from pathlib import Path
 
 # Root of the project (parent of this backend/ folder)
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
+USERS_DIR = DATA / "users"          # per-user data lives here
+USERS_FILE = DATA / "users.json"    # account records
+SECRET_FILE = DATA / "secret.key"   # HMAC key for session tokens
 
-UPLOADS = DATA / "uploads"      # original uploaded files
-PAGES = DATA / "pages"          # rendered page images (png), per upload
-TEMPLATES = DATA / "templates"  # template definitions (json)
-EXPORTS = DATA / "exports"      # generated .xlsx files
-
-for _p in (UPLOADS, PAGES, TEMPLATES, EXPORTS):
+for _p in (DATA, USERS_DIR):
     _p.mkdir(parents=True, exist_ok=True)
+
+
+# ---- per-user path helpers ----
+def user_root(user_id: str) -> Path:
+    return USERS_DIR / user_id
+
+
+def user_templates(user_id: str) -> Path:
+    p = user_root(user_id) / "templates"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def user_uploads(user_id: str) -> Path:
+    p = user_root(user_id) / "uploads"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def user_pages(user_id: str) -> Path:
+    p = user_root(user_id) / "pages"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def user_exports(user_id: str) -> Path:
+    p = user_root(user_id) / "exports"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
 
 # Ollama
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")

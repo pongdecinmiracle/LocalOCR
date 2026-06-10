@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from ollama_client import vision_extract
 from pdf_utils import image_to_png_bytes, load_page_image
@@ -108,8 +109,11 @@ def _clean_table(rows, columns: list[dict]) -> list[dict]:
     return out
 
 
-def extract_document(upload_id: str, template: dict, model: str) -> dict:
-    """Extract all template fields from one (already rendered) document."""
+def extract_document(pages_dir: Path, template: dict, model: str) -> dict:
+    """Extract all template fields from one (already rendered) document.
+
+    `pages_dir` is the directory holding that document's page_<i>.png files.
+    """
     # Group fields by the page they live on, preserving order.
     by_page: dict[int, list[dict]] = {}
     for f in template["fields"]:
@@ -119,7 +123,7 @@ def extract_document(upload_id: str, template: dict, model: str) -> dict:
 
     for page_idx, fields in sorted(by_page.items()):
         try:
-            img = load_page_image(upload_id, page_idx)
+            img = load_page_image(pages_dir, page_idx)
         except FileNotFoundError:
             continue
         png = image_to_png_bytes(img)
