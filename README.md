@@ -18,6 +18,23 @@ all the template's fields at once as structured JSON. The boxes you draw define
 columns, and a location hint that tells the model where to look. Full-page
 context is far more accurate than tiny per-field crops.
 
+## Prerequisites
+
+Install these **before** running setup:
+
+| Requirement | Notes |
+|-------------|-------|
+| **Windows** | Built and tested on Windows 11. The `run.ps1` / `run.bat` launchers are Windows; the code itself is cross-platform. |
+| **Python 3.10+** | Runs the backend, page rendering, and Excel export. |
+| **[Ollama](https://ollama.com/download)** | Hosts the local vision model. |
+| **Vision model** `qwen2.5vl:7b` | ~6 GB, pulled once with `ollama pull` (see Setup). Does the actual reading. |
+| **NVIDIA GPU (recommended)** | ≥6 GB VRAM for smooth performance. CPU-only works but is much slower. |
+| **Disk space** | ~6 GB for the model + ~1 GB for the Python venv and rendered pages. |
+| **Internet** | One-time only — for `pip install` and the model pull. Everything runs fully offline afterwards. |
+
+**Not required:** Node.js (the frontend is plain HTML/JS with no build step) and Git
+(only needed if you `git clone` the repo).
+
 ## Setup (one time)
 
 Already done if Claude set this up, but to reproduce:
