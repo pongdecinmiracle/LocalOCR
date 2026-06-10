@@ -25,6 +25,20 @@ templates.
 - Accounts and per-user data live under `data/` (see [Layout](#layout)); this
   folder is git-ignored and never leaves your machine.
 
+### Admin page
+
+The **first account you create becomes the administrator**. Admins see an extra
+**⚙ Admin** tab for managing users:
+
+- View all users with their role and document/template counts
+- **Add** new accounts (optionally as admins)
+- **Reset** any user's password
+- **Grant or revoke** admin rights
+- **Delete** a user — this also removes all of that user's documents and templates
+
+Safeguards prevent removing the last remaining admin or deleting your own account
+from the panel.
+
 > **Note on exposure:** the login protects access, but on a plain-HTTP server
 > passwords travel unencrypted. If you expose LocalOCR beyond localhost, put it
 > behind an **HTTPS reverse proxy** (or use an SSH tunnel). See

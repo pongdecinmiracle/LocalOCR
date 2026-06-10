@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -18,6 +19,8 @@ from config import (
     VISION_MODEL,
     user_exports,
     user_pages,
+    user_root,
+    user_templates,
     user_uploads,
 )
 from excel_export import export_results
@@ -25,7 +28,14 @@ from extract import extract_document
 from ollama_client import OllamaError, is_up, model_ready
 from pdf_utils import render_document
 
-app = FastAPI(title="LocalOCR")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Make sure existing installs always have at least one admin.
+    auth.ensure_admin()
+    yield
+
+
+app = FastAPI(title="LocalOCR", lifespan=lifespan)
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 
@@ -94,6 +104,81 @@ def logout(response: Response):
 @app.get("/api/me")
 def me(user: dict = Depends(current_user)):
     return user
+
+
+# ---------------- admin ----------------
+def current_admin(user: dict = Depends(current_user)) -> dict:
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Admin access required.")
+    return user
+
+
+class AdminCreate(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+
+class PasswordReset(BaseModel):
+    password: str
+
+
+class AdminToggle(BaseModel):
+    is_admin: bool
+
+
+def _user_counts(user_id: str) -> dict:
+    templates = len(list(user_templates(user_id).glob("*.json")))
+    up_dir = user_uploads(user_id)
+    uploads = sum(1 for d in up_dir.iterdir() if (d / "meta.json").exists()) if up_dir.exists() else 0
+    return {"templates": templates, "uploads": uploads}
+
+
+@app.get("/api/admin/users")
+def admin_list_users(admin: dict = Depends(current_admin)):
+    users = auth.list_all_users()
+    for u in users:
+        u["counts"] = _user_counts(u["id"])
+    return {"users": users, "me": admin["id"]}
+
+
+@app.post("/api/admin/users")
+def admin_create_user(body: AdminCreate, admin: dict = Depends(current_admin)):
+    try:
+        return auth.create_user(body.username, body.password, is_admin=body.is_admin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/admin/users/{user_id}/password")
+def admin_reset_password(user_id: str, body: PasswordReset, admin: dict = Depends(current_admin)):
+    try:
+        return auth.set_password(user_id, body.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/admin/users/{user_id}/admin")
+def admin_set_admin(user_id: str, body: AdminToggle, admin: dict = Depends(current_admin)):
+    try:
+        return auth.set_admin(user_id, body.is_admin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: str, admin: dict = Depends(current_admin)):
+    if user_id == admin["id"]:
+        raise HTTPException(400, "You cannot delete your own account here.")
+    try:
+        ok = auth.delete_user(user_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not ok:
+        raise HTTPException(404, "user not found")
+    # Remove all of that user's data.
+    shutil.rmtree(user_root(user_id), ignore_errors=True)
+    return {"deleted": user_id}
 
 
 # ---------------- status ----------------

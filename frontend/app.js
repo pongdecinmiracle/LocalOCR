@@ -19,6 +19,7 @@ $$(".tab").forEach((t) =>
     $("#tab-" + t.dataset.tab).classList.add("active");
     if (t.dataset.tab === "editor") refreshEditorDocs();
     if (t.dataset.tab === "run") refreshRunTab();
+    if (t.dataset.tab === "admin") loadAdminUsers();
   })
 );
 
@@ -566,6 +567,125 @@ $("#exportBtn").addEventListener("click", async () => {
   $("#exportLink").innerHTML = `✓ <a class="link" href="/api/download/${res.filename}">Download ${res.filename}</a>`;
 });
 
+/* ---------------- admin ---------------- */
+function fmtDate(ts) {
+  try { return new Date(ts * 1000).toLocaleDateString(); } catch { return ""; }
+}
+
+async function loadAdminUsers() {
+  const wrap = $("#usersTableWrap");
+  wrap.innerHTML = '<p class="muted">Loading…</p>';
+  let data;
+  try {
+    const r = await fetch("/api/admin/users");
+    if (!r.ok) throw new Error("not authorized");
+    data = await r.json();
+  } catch (e) {
+    wrap.innerHTML = '<p class="muted">Could not load users.</p>';
+    return;
+  }
+  $("#userCount").textContent = data.users.length;
+  const meId = data.me;
+  let html = '<table class="res"><thead><tr><th>Username</th><th>Role</th>' +
+    '<th>Docs</th><th>Templates</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+  data.users.forEach((u) => {
+    const isMe = u.id === meId;
+    const role = u.is_admin
+      ? '<span class="role-admin">admin</span>'
+      : '<span class="role-user">user</span>';
+    const you = isMe ? ' <span class="you-tag">(you)</span>' : "";
+    html += `<tr data-id="${u.id}" data-name="${u.username}" data-admin="${u.is_admin}">
+      <td>${u.username}${you}</td>
+      <td>${role}</td>
+      <td>${u.counts.uploads}</td>
+      <td>${u.counts.templates}</td>
+      <td>${fmtDate(u.created_at)}</td>
+      <td><div class="act">
+        <button class="btn pw">Reset password</button>
+        <button class="btn role">${u.is_admin ? "Revoke admin" : "Make admin"}</button>
+        ${isMe ? "" : '<button class="btn danger del">Delete</button>'}
+      </div></td></tr>`;
+  });
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+
+  $$("#usersTableWrap tr[data-id]").forEach((row) => {
+    const id = row.dataset.id;
+    const name = row.dataset.name;
+    const isAdmin = row.dataset.admin === "true";
+    row.querySelector(".pw").addEventListener("click", () => resetPassword(id, name));
+    row.querySelector(".role").addEventListener("click", () => toggleAdmin(id, name, !isAdmin));
+    const del = row.querySelector(".del");
+    if (del) del.addEventListener("click", () => deleteUser(id, name));
+  });
+}
+
+async function adminAction(promise, okMsg) {
+  const msg = $("#adminMsg");
+  try {
+    const r = await promise;
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || "error");
+    }
+    msg.textContent = okMsg || "Done.";
+    await loadAdminUsers();
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+$("#addUserBtn").addEventListener("click", () => {
+  const username = $("#newUser").value.trim();
+  const password = $("#newPass").value;
+  const is_admin = $("#newAdmin").checked;
+  if (!username || !password) {
+    $("#adminMsg").textContent = "Username and password required.";
+    return;
+  }
+  adminAction(
+    fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, is_admin }),
+    }),
+    `Added ${username}.`
+  ).then(() => {
+    $("#newUser").value = "";
+    $("#newPass").value = "";
+    $("#newAdmin").checked = false;
+  });
+});
+
+function resetPassword(id, name) {
+  const pw = prompt(`New password for "${name}" (min 6 characters):`);
+  if (!pw) return;
+  adminAction(
+    fetch(`/api/admin/users/${id}/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw }),
+    }),
+    `Password reset for ${name}.`
+  );
+}
+
+function toggleAdmin(id, name, makeAdmin) {
+  adminAction(
+    fetch(`/api/admin/users/${id}/admin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_admin: makeAdmin }),
+    }),
+    `${name} is now ${makeAdmin ? "an admin" : "a regular user"}.`
+  );
+}
+
+function deleteUser(id, name) {
+  if (!confirm(`Delete user "${name}" and ALL their documents and templates? This cannot be undone.`)) return;
+  adminAction(fetch(`/api/admin/users/${id}`, { method: "DELETE" }), `Deleted ${name}.`);
+}
+
 /* ---------------- auth ---------------- */
 let authMode = "login"; // or "register"
 let statusTimer = null;
@@ -617,6 +737,7 @@ async function enterApp(user) {
   state.user = user;
   $("#userName").textContent = user.username;
   $("#userArea").classList.remove("hidden");
+  $("#adminTab").classList.toggle("hidden", !user.is_admin);
   $("#authGate").classList.add("hidden");
   $("#authUser").value = "";
   $("#authPass").value = "";

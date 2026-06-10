@@ -63,8 +63,11 @@ def _save_users(users: dict) -> None:
     USERS_FILE.write_text(json.dumps(users, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def create_user(username: str, password: str) -> dict:
-    """Create a new user. Raises ValueError on bad input or duplicate."""
+def create_user(username: str, password: str, is_admin: bool = False) -> dict:
+    """Create a new user. The very first account is always an admin.
+
+    Raises ValueError on bad input or duplicate.
+    """
     username = (username or "").strip()
     if len(username) < 3:
         raise ValueError("Username must be at least 3 characters.")
@@ -82,6 +85,7 @@ def create_user(username: str, password: str) -> dict:
             "password_hash": h,
             "salt": salt,
             "created_at": int(time.time()),
+            "is_admin": bool(is_admin) or len(users) == 0,
         }
         users[key] = user
         _save_users(users)
@@ -105,7 +109,83 @@ def get_user_by_id(user_id: str) -> dict | None:
 
 
 def _public(user: dict) -> dict:
-    return {"id": user["id"], "username": user["username"], "created_at": user["created_at"]}
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "created_at": user["created_at"],
+        "is_admin": bool(user.get("is_admin", False)),
+    }
+
+
+# ---------------- admin management ----------------
+def _find_key(users: dict, user_id: str) -> str | None:
+    for key, u in users.items():
+        if u["id"] == user_id:
+            return key
+    return None
+
+
+def _admin_count(users: dict) -> int:
+    return sum(1 for u in users.values() if u.get("is_admin"))
+
+
+def ensure_admin() -> None:
+    """Backfill: if accounts exist but none is admin, promote the oldest one."""
+    with _lock:
+        users = _load_users()
+        if not users or _admin_count(users) > 0:
+            return
+        oldest = min(users.values(), key=lambda u: u.get("created_at", 0))
+        for u in users.values():
+            if u["id"] == oldest["id"]:
+                u["is_admin"] = True
+        _save_users(users)
+
+
+def list_all_users() -> list[dict]:
+    users = _load_users()
+    return [_public(u) for u in sorted(users.values(), key=lambda u: u.get("created_at", 0))]
+
+
+def set_admin(user_id: str, value: bool) -> dict:
+    with _lock:
+        users = _load_users()
+        key = _find_key(users, user_id)
+        if not key:
+            raise ValueError("User not found.")
+        if not value and users[key].get("is_admin") and _admin_count(users) <= 1:
+            raise ValueError("There must be at least one admin.")
+        users[key]["is_admin"] = bool(value)
+        _save_users(users)
+        return _public(users[key])
+
+
+def set_password(user_id: str, new_password: str) -> dict:
+    if len(new_password or "") < 6:
+        raise ValueError("Password must be at least 6 characters.")
+    with _lock:
+        users = _load_users()
+        key = _find_key(users, user_id)
+        if not key:
+            raise ValueError("User not found.")
+        h, salt = hash_password(new_password)
+        users[key]["password_hash"] = h
+        users[key]["salt"] = salt
+        _save_users(users)
+        return _public(users[key])
+
+
+def delete_user(user_id: str) -> bool:
+    with _lock:
+        users = _load_users()
+        key = _find_key(users, user_id)
+        if not key:
+            return False
+        if users[key].get("is_admin") and _admin_count(users) <= 1:
+            raise ValueError("Cannot delete the last admin.")
+        del users[key]
+        _save_users(users)
+        return True
 
 
 # ---------------- session tokens ----------------

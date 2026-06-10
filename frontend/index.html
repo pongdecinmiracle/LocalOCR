@@ -35,6 +35,7 @@
       <button class="tab active" data-tab="docs">1 · Documents</button>
       <button class="tab" data-tab="editor">2 · Template Editor</button>
       <button class="tab" data-tab="run">3 · Extract &amp; Export</button>
+      <button class="tab hidden" id="adminTab" data-tab="admin">⚙ Admin</button>
     </nav>
     <div id="status" class="status" title="Engine status">checking…</div>
     <div id="userArea" class="userarea hidden">
@@ -139,6 +140,24 @@
       </div>
       <div id="exportLink" class="muted"></div>
       <div id="resultsTableWrap" class="results-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ ADMIN ============ -->
+  <section id="tab-admin" class="panel">
+    <div class="card">
+      <h2>Add a user</h2>
+      <div class="row">
+        <input id="newUser" type="text" placeholder="username" />
+        <input id="newPass" type="password" placeholder="password (min 6 chars)" />
+        <label class="inline-check"><input id="newAdmin" type="checkbox" /> admin</label>
+        <button id="addUserBtn" class="btn primary">+ Add user</button>
+        <span id="adminMsg" class="muted small"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Users <span id="userCount" class="badge">0</span></h2>
+      <div id="usersTableWrap" class="results-wrap"></div>
     </div>
   </section>
 
