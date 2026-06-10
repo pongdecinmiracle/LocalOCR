@@ -37,7 +37,7 @@ Install these **before** running setup:
 
 ## Setup (one time)
 
-Already done if Claude set this up, but to reproduce:
+### Windows
 
 ```powershell
 # 1. Python deps
@@ -48,7 +48,26 @@ python -m venv .venv
 ollama pull qwen2.5vl:7b
 ```
 
+### Linux server (optional)
+
+```bash
+# 1. Install Ollama (skip if already installed)
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Python deps
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+# 3. Vision model (~6 GB, one time)
+ollama pull qwen2.5vl:7b
+```
+
+PyMuPDF ships prebuilt wheels, so no extra system packages are needed. For GPU
+acceleration, install the NVIDIA driver — Ollama detects the GPU automatically.
+
 ## Run
+
+### Windows
 
 ```powershell
 .\run.ps1        # or double-click run.bat
@@ -56,6 +75,57 @@ ollama pull qwen2.5vl:7b
 
 This starts Ollama (if needed), launches the server, and opens
 <http://127.0.0.1:8000>.
+
+### Linux server
+
+```bash
+chmod +x run.sh        # first time only
+./run.sh
+```
+
+This starts Ollama if it isn't already running and launches the server on
+<http://127.0.0.1:8000>. It does **not** open a browser (servers are usually
+headless).
+
+**To reach it from another machine**, bind to all interfaces:
+
+```bash
+LOCALOCR_HOST=0.0.0.0 ./run.sh
+```
+
+Then browse to `http://<server-ip>:8000`.
+
+> ⚠️ **Security:** the app has no built-in authentication. Only bind to
+> `0.0.0.0` on a trusted/private network, or keep the default `127.0.0.1` and
+> reach it through an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 user@server`) or
+> behind a reverse proxy that adds auth.
+
+**Run it as a background service (systemd):** create
+`/etc/systemd/system/localocr.service` —
+
+```ini
+[Unit]
+Description=LocalOCR
+After=network.target
+
+[Service]
+WorkingDirectory=/path/to/LocalOCR
+ExecStart=/path/to/LocalOCR/run.sh
+Restart=on-failure
+User=youruser
+
+[Install]
+WantedBy=multi-user.target
+```
+
+then `sudo systemctl enable --now localocr`.
+
+### Environment overrides (both platforms)
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `LOCALOCR_HOST` | `127.0.0.1` | Interface to bind (Linux `run.sh`). Use `0.0.0.0` for LAN access. |
+| `LOCALOCR_PORT` | `8000` | Port to serve on (Linux `run.sh`). |
 
 ## How to use the application
 
