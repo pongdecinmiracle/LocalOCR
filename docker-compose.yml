@@ -24,15 +24,15 @@ services:
     # Uncomment to reach Ollama directly from the host (e.g. to `ollama pull`):
     # ports:
     #   - "11434:11434"
-    # For NVIDIA GPU acceleration, install the NVIDIA Container Toolkit and
-    # uncomment the block below (see README → GPU).
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # NVIDIA GPU acceleration. Requires an NVIDIA GPU + driver and (on Windows)
+    # Docker Desktop's WSL2 backend. Comment this block out for CPU-only hosts.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   backend:
     build: ./backend
