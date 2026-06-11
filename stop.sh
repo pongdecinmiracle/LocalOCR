@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# LocalOCR stopper (Linux / macOS)
-pids=$(pgrep -f 'uvicorn main:app' || true)
-if [ -n "$pids" ]; then
-  kill $pids
-  echo "[OK] LocalOCR server stopped."
-else
-  echo "[i] LocalOCR server was not running."
-fi
-echo "Note: Ollama is left running. To stop it too: pkill ollama"
+# LocalOCR stopper (Linux / macOS) — stops all services.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+docker compose down
+echo "[OK] LocalOCR services stopped (data preserved in Docker volumes)."
+echo "      To also wipe all data:  docker compose down -v"

@@ -14,8 +14,8 @@ import json
 import re
 from pathlib import Path
 
-from ollama_client import vision_extract
-from pdf_utils import image_to_png_bytes, load_page_image
+from app.ollama_client import vision_extract
+from app.pdf_utils import image_to_png_bytes, load_page_image
 
 _NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
 

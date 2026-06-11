@@ -2,13 +2,11 @@
 __pycache__/
 *.pyc
 
-# runtime data — never shipped with the repo
-data/users/
-data/users.json
-data/secret.key
-data/uploads/
-data/pages/
-data/exports/
+# environment / secrets
+.env
+
+# runtime data (local non-Docker runs); production data lives in Docker volumes
+data/
 
 # local editor / tool settings
 .claude/

@@ -1,0 +1,12 @@
+"""SQLAlchemy engine, session factory and declarative base."""
+from __future__ import annotations
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+from app.config import DATABASE_URL
+
+# pool_pre_ping recycles connections dropped by the DB between requests.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+Base = declarative_base()

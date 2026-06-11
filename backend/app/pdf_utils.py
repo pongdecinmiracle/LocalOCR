@@ -12,7 +12,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 
-from config import RENDER_DPI
+from app.config import RENDER_DPI
 
 
 def _zoom_for_dpi(dpi: int) -> float:

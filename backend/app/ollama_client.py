@@ -5,7 +5,7 @@ import base64
 
 import httpx
 
-from config import OLLAMA_HOST, VISION_MODEL
+from app.config import OLLAMA_HOST, VISION_MODEL
 
 
 class OllamaError(RuntimeError):

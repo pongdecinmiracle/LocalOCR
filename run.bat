@@ -1,11 +1,16 @@
 @echo off
 cd /d "%~dp0"
-tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I "ollama.exe" >NUL
+where docker >NUL 2>&1
 if errorlevel 1 (
-  echo Starting Ollama...
-  start "" /B ollama serve
-  timeout /t 2 >NUL
+  echo Docker is required. Install Docker Desktop: https://www.docker.com/products/docker-desktop/
+  exit /b 1
 )
-echo LocalOCR running at http://127.0.0.1:8000
-start "" http://127.0.0.1:8000
-".venv\Scripts\python.exe" -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+if not exist ".env" (
+  copy ".env.example" ".env" >NUL
+  echo Created .env from .env.example - review it before going to production.
+)
+echo Building and starting LocalOCR services...
+docker compose up -d --build
+echo LocalOCR running at http://localhost:8080  (or your LOCALOCR_PORT)
+echo First run only - pull the model:  docker compose exec ollama ollama pull qwen2.5vl:7b
+start "" http://localhost:8080

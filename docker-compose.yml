@@ -1,0 +1,68 @@
+name: localocr
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-localocr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localocr}
+      POSTGRES_DB: ${POSTGRES_DB:-localocr}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-localocr} -d ${POSTGRES_DB:-localocr}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment to reach Ollama directly from the host (e.g. to `ollama pull`):
+    # ports:
+    #   - "11434:11434"
+    # For NVIDIA GPU acceleration, install the NVIDIA Container Toolkit and
+    # uncomment the block below (see README → GPU).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-localocr}:${POSTGRES_PASSWORD:-localocr}@db:5432/${POSTGRES_DB:-localocr}
+      OLLAMA_HOST: http://ollama:11434
+      LOCALOCR_MODEL: ${LOCALOCR_MODEL:-qwen2.5vl:7b}
+      LOCALOCR_DPI: ${LOCALOCR_DPI:-200}
+      LOCALOCR_DATA_DIR: /data
+      LOCALOCR_SECRET_KEY: ${LOCALOCR_SECRET_KEY:-}
+      LOCALOCR_COOKIE_SECURE: ${LOCALOCR_COOKIE_SECURE:-false}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    volumes:
+      - file_data:/data
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${LOCALOCR_PORT:-8080}:80"
+
+volumes:
+  db_data:
+  ollama_data:
+  file_data:

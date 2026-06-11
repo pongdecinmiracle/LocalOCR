@@ -5,12 +5,29 @@ over the fields you care about, save that layout as a reusable **template**, the
 batch-extract those fields from any number of documents and **export to Excel** —
 all running on your own machine via a local vision LLM.
 
-- **Engine:** [Ollama](https://ollama.com) + `qwen2.5vl:7b` (vision LLM), on your GPU.
-- **Backend:** Python + FastAPI (renders pages, calls the model, writes xlsx).
-- **Frontend:** a single-page browser UI with a canvas box editor. No build step.
-- **Accounts:** each user signs in; templates and uploaded documents are private
-  to that account.
-- **Nothing leaves your computer.**
+LocalOCR runs as a set of **separate, containerized services** orchestrated with
+Docker Compose:
+
+| Service | Tech | Role |
+|---------|------|------|
+| **frontend** | nginx | Serves the single-page UI and reverse-proxies `/api` to the backend |
+| **backend** | Python · FastAPI · uvicorn | Renders pages, calls the model, runs extraction, writes xlsx |
+| **db** | PostgreSQL | Stores accounts, templates, and upload metadata |
+| **ollama** | [Ollama](https://ollama.com) + `qwen2.5vl:7b` | The local vision LLM that does the reading |
+
+Files (uploaded originals, rendered page images, Excel exports) live on a shared
+Docker volume; structured data lives in PostgreSQL. **Nothing leaves your computer.**
+
+```
+                ┌────────────┐   /api/*   ┌───────────┐        ┌────────────┐
+  browser  ───► │  frontend  │ ─────────► │  backend  │ ─────► │     db     │
+                │  (nginx)   │            │ (FastAPI) │        │ PostgreSQL │
+                └────────────┘            └─────┬─────┘        └────────────┘
+                                                │  ┌──────────┐  ┌──────────┐
+                                                ├─►│  ollama  │  │  volume  │
+                                                │  │ (vision) │  │  /data   │
+                                                   └──────────┘  └──────────┘
+```
 
 ## User accounts
 
@@ -21,9 +38,10 @@ templates.
 
 - Passwords are hashed (PBKDF2-HMAC-SHA256, per-user salt) — never stored in
   plain text.
-- Sign-in uses a secure httpOnly session cookie that lasts 30 days.
-- Accounts and per-user data live under `data/` (see [Layout](#layout)); this
-  folder is git-ignored and never leaves your machine.
+- Sign-in uses a secure httpOnly session cookie that lasts 30 days, signed with
+  `LOCALOCR_SECRET_KEY`.
+- Accounts and templates are stored in PostgreSQL; per-user files live on the
+  backend's data volume (see [Layout](#layout)). Both stay on your machine.
 
 ### Admin page
 
@@ -41,8 +59,7 @@ from the panel.
 
 > **Note on exposure:** the login protects access, but on a plain-HTTP server
 > passwords travel unencrypted. If you expose LocalOCR beyond localhost, put it
-> behind an **HTTPS reverse proxy** (or use an SSH tunnel). See
-> [Run · Linux server](#linux-server).
+> behind an **HTTPS reverse proxy**. See [Run · Security](#reaching-it-from-another-machine).
 
 ## How it works
 
@@ -58,114 +75,67 @@ Install these **before** running setup:
 
 | Requirement | Notes |
 |-------------|-------|
-| **Windows** | Built and tested on Windows 11. The `run.ps1` / `run.bat` launchers are Windows; the code itself is cross-platform. |
-| **Python 3.10+** | Runs the backend, page rendering, and Excel export. |
-| **[Ollama](https://ollama.com/download)** | Hosts the local vision model. |
-| **Vision model** `qwen2.5vl:7b` | ~6 GB, pulled once with `ollama pull` (see Setup). Does the actual reading. |
-| **NVIDIA GPU (recommended)** | ≥6 GB VRAM for smooth performance. CPU-only works but is much slower. |
-| **Disk space** | ~6 GB for the model + ~1 GB for the Python venv and rendered pages. |
-| **Internet** | One-time only — for `pip install` and the model pull. Everything runs fully offline afterwards. |
+| **[Docker](https://www.docker.com/products/docker-desktop/) + Compose v2** | The only hard requirement. Docker Desktop (Windows/macOS) or Docker Engine + `docker compose` (Linux). |
+| **Vision model** `qwen2.5vl:7b` | ~6 GB, pulled once into the `ollama` container (see Setup). Does the actual reading. |
+| **NVIDIA GPU (optional)** | ≥6 GB VRAM for smooth performance. CPU-only works but is much slower. See [GPU](#gpu-acceleration). |
+| **Disk space** | ~6 GB for the model + a few GB for images and rendered pages. |
+| **Internet** | One-time only — to pull the base images and the model. Everything runs offline afterwards. |
 
-**Not required:** Node.js (the frontend is plain HTML/JS with no build step) and Git
-(only needed if you `git clone` the repo).
+**Not required:** Python, Node.js, or a local Ollama install — everything runs
+inside containers.
 
 ## Setup (one time)
 
-### Windows
-
-```powershell
-# 1. Python deps
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-# 2. Vision model (~6 GB, one time)
-ollama pull qwen2.5vl:7b
-```
-
-### Linux server (optional)
-
 ```bash
-# 1. Install Ollama (skip if already installed)
-curl -fsSL https://ollama.com/install.sh | sh
+# 1. Configure (sets DB password, session secret, port, etc.)
+cp .env.example .env
+#    then edit .env — at minimum set a strong POSTGRES_PASSWORD and LOCALOCR_SECRET_KEY
+#    generate a secret:  python -c "import secrets; print(secrets.token_hex(32))"
 
-# 2. Python deps
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+# 2. Build and start all four services
+docker compose up -d --build
 
-# 3. Vision model (~6 GB, one time)
-ollama pull qwen2.5vl:7b
+# 3. Pull the vision model into the ollama container (~6 GB, one time)
+docker compose exec ollama ollama pull qwen2.5vl:7b
 ```
 
-PyMuPDF ships prebuilt wheels, so no extra system packages are needed. For GPU
-acceleration, install the NVIDIA driver — Ollama detects the GPU automatically.
+Then open **<http://localhost:8080>** (or whatever `LOCALOCR_PORT` you set) and
+create your first account — it becomes the admin.
+
+> The `run.ps1` / `run.bat` / `run.sh` launchers wrap these steps (they create
+> `.env`, build, start, and open the browser). `stop.ps1` / `stop.bat` /
+> `stop.sh` run `docker compose down`.
 
 ## Run
 
-### Windows
-
-```powershell
-.\run.ps1        # or double-click run.bat
-```
-
-This starts Ollama (if needed), launches the server, and opens
-<http://127.0.0.1:8000>.
-
-**To stop it:** press **`Ctrl + C`** in the terminal, or run **`.\stop.ps1`**
-(or double-click **`stop.bat`**). Ollama is left running.
-
-### Linux server
-
 ```bash
-chmod +x run.sh        # first time only
-./run.sh
+docker compose up -d        # start (detached)
+docker compose logs -f      # follow logs
+docker compose down         # stop (data preserved in named volumes)
+docker compose down -v      # stop AND wipe all data (DB + files + model)
 ```
 
-This starts Ollama if it isn't already running and launches the server on
-<http://127.0.0.1:8000>. It does **not** open a browser (servers are usually
-headless).
+On Windows you can instead run `.\run.ps1` (or double-click `run.bat`) to start
+and `.\stop.ps1` (or `stop.bat`) to stop.
 
-**To stop it:** press **`Ctrl + C`**, or run **`./stop.sh`** (if running via
-systemd: `sudo systemctl stop localocr`).
+### Reaching it from another machine
 
-**To reach it from another machine**, bind to all interfaces:
-
-```bash
-LOCALOCR_HOST=0.0.0.0 ./run.sh
-```
-
-Then browse to `http://<server-ip>:8000`.
+The frontend publishes `LOCALOCR_PORT` (default `8080`) on the host, so it's
+already reachable at `http://<host-ip>:8080`. To change the published port, set
+`LOCALOCR_PORT` in `.env`.
 
 > ⚠️ **Security:** the app has username/password login, but on plain HTTP those
-> credentials travel unencrypted. When exposing it on `0.0.0.0`, put it behind an
-> **HTTPS reverse proxy**, or keep the default `127.0.0.1` and reach it through an
-> SSH tunnel (`ssh -L 8000:127.0.0.1:8000 user@server`).
+> credentials travel unencrypted. For anything beyond localhost, terminate
+> **HTTPS** in front of the `frontend` service (e.g. a reverse proxy such as
+> Caddy/Traefik/nginx, or a cloud load balancer) and set
+> `LOCALOCR_COOKIE_SECURE=true` in `.env` so the session cookie is marked Secure.
 
-**Run it as a background service (systemd):** create
-`/etc/systemd/system/localocr.service` —
+### GPU acceleration
 
-```ini
-[Unit]
-Description=LocalOCR
-After=network.target
-
-[Service]
-WorkingDirectory=/path/to/LocalOCR
-ExecStart=/path/to/LocalOCR/run.sh
-Restart=on-failure
-User=youruser
-
-[Install]
-WantedBy=multi-user.target
-```
-
-then `sudo systemctl enable --now localocr`.
-
-### Environment overrides (both platforms)
-
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `LOCALOCR_HOST` | `127.0.0.1` | Interface to bind (Linux `run.sh`). Use `0.0.0.0` for LAN access. |
-| `LOCALOCR_PORT` | `8000` | Port to serve on (Linux `run.sh`). |
+By default the `ollama` service runs on CPU. For NVIDIA GPUs, install the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+and uncomment the `deploy:` GPU block under the `ollama` service in
+`docker-compose.yml`, then `docker compose up -d`.
 
 ## How to use the application
 
@@ -249,8 +219,9 @@ removes the selected one.
 ### Tips & troubleshooting
 
 - **Engine status** is shown top-right. It must read **"✓ qwen2.5vl:7b ready"**.
-  If it says *Ollama not running*, start Ollama (`ollama serve`); if it says the
-  model isn't ready, run `ollama pull qwen2.5vl:7b`.
+  If it says *Ollama not running*, check `docker compose ps` (the `ollama`
+  container should be up); if it says the model isn't ready, run
+  `docker compose exec ollama ollama pull qwen2.5vl:7b`.
 - **A value came out wrong?** Make sure the box is over the intended field, and
   that the field **Type** matches (use Number for amounts, Date for dates).
   Higher-resolution scans extract better — see `LOCALOCR_DPI` below.
@@ -318,34 +289,54 @@ removes the selected one.
 
 ### เคล็ดลับและการแก้ปัญหา
 
-- **สถานะเครื่องมือ (Engine status)** แสดงที่มุมขวาบน ต้องขึ้นว่า **"✓ qwen2.5vl:7b ready"** — หากขึ้นว่า *Ollama not running* ให้เริ่ม Ollama ด้วยคำสั่ง `ollama serve`; หากขึ้นว่าโมเดลยังไม่พร้อม ให้รัน `ollama pull qwen2.5vl:7b`
+- **สถานะเครื่องมือ (Engine status)** แสดงที่มุมขวาบน ต้องขึ้นว่า **"✓ qwen2.5vl:7b ready"** — หากขึ้นว่า *Ollama not running* ให้ตรวจสอบว่าคอนเทนเนอร์ `ollama` ทำงานอยู่ด้วย `docker compose ps`; หากขึ้นว่าโมเดลยังไม่พร้อม ให้รัน `docker compose exec ollama ollama pull qwen2.5vl:7b`
 - **ค่าที่ดึงออกมาผิด?** ตรวจให้แน่ใจว่ากรอบครอบตรงช่องที่ต้องการ และ **Type** ตรงกับชนิดข้อมูล (ใช้ Number สำหรับจำนวนเงิน, Date สำหรับวันที่) — สแกนที่ความละเอียดสูงขึ้นจะดึงข้อมูลได้แม่นยำกว่า ดู `LOCALOCR_DPI` ด้านล่าง
 - **การรันซ้ำ** ทำได้ง่าย เพียงปรับเทมเพลตแล้วดึงข้อมูลใหม่
 - ทุกอย่างทำงานในเครื่องของคุณ — เอกสารไม่ถูกส่งออกไปนอกเครื่อง
 
 ## Configuration
 
-Environment variables (optional):
+All configuration is via environment variables, set in `.env` (see
+`.env.example`). They are passed to the services by `docker-compose.yml`.
 
 | Var | Default | Meaning |
 |-----|---------|---------|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `localocr` | Database credentials |
+| `LOCALOCR_PORT` | `8080` | Host port the app is published on |
+| `LOCALOCR_SECRET_KEY` | _(generated)_ | Secret used to sign session cookies — set a long random value in production |
+| `LOCALOCR_COOKIE_SECURE` | `false` | Set `true` when serving over HTTPS |
+| `WEB_CONCURRENCY` | `2` | Number of uvicorn workers in the backend |
 | `LOCALOCR_MODEL` | `qwen2.5vl:7b` | Ollama vision model to use |
 | `LOCALOCR_DPI` | `200` | Page render resolution |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama endpoint |
+
+Internal service URLs (`DATABASE_URL`, `OLLAMA_HOST`, `LOCALOCR_DATA_DIR`) are
+wired up in `docker-compose.yml` and rarely need changing.
 
 ## Layout
 
 ```
-backend/    FastAPI app, auth, rendering, Ollama client, extraction, Excel export
-frontend/   index.html + app.js + styles.css (login gate + box editor UI)
-data/       runtime data (git-ignored):
-              users.json                      account records (hashed passwords)
-              secret.key                      session-signing key
-              users/<user_id>/templates/      that user's templates (json)
-              users/<user_id>/uploads/        that user's original files
-              users/<user_id>/pages/          rendered page images
-              users/<user_id>/exports/        generated xlsx files
-samples/    a generated sample invoice to try
+docker-compose.yml   defines the four services + named volumes
+.env.example         configuration template (copy to .env)
+backend/             backend service
+  Dockerfile, requirements.txt, entrypoint.sh
+  app/
+    main.py          FastAPI app (API only)
+    config.py        env-driven settings
+    database.py      SQLAlchemy engine/session
+    models.py        ORM: users, templates, uploads
+    security.py      password hashing + session tokens
+    deps.py          shared FastAPI dependencies (db, current_user/admin)
+    services/        users.py, templates.py (DB-backed logic)
+    routers/         auth, admin, uploads, templates, extraction
+    pdf_utils.py · extract.py · excel_export.py · ollama_client.py
+frontend/            frontend service
+  Dockerfile, nginx.conf, index.html, app.js, styles.css
+samples/             a generated sample invoice to try
+
+Persistent data lives in Docker named volumes (not in the repo):
+  db_data       PostgreSQL  — accounts, templates, upload metadata
+  file_data     /data/users/<user_id>/{uploads,pages,exports}/ + secret.key
+  ollama_data   the downloaded vision model
 ```
 
 ## Try it now
