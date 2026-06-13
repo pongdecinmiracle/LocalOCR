@@ -8,6 +8,7 @@ const state = {
   templates: [],
   editor: { docId: null, page: 0, template: { id: null, name: "", fields: [] }, selField: null },
   lastResults: null,
+  allowRegistration: true,
 };
 
 /* ---------------- tabs ---------------- */
@@ -20,6 +21,7 @@ $$(".tab").forEach((t) =>
     if (t.dataset.tab === "editor") refreshEditorDocs();
     if (t.dataset.tab === "run") refreshRunTab();
     if (t.dataset.tab === "admin") loadAdminUsers();
+    setMonitorPolling(t.dataset.tab === "monitor");
   })
 );
 
@@ -133,6 +135,7 @@ $("#newTemplateBtn").addEventListener("click", () => {
   state.editor.template = { id: null, name: "", fields: [] };
   state.editor.selField = null;
   $("#templateName").value = "";
+  $("#templateEngine").value = "";
   $("#templatePicker").value = "";
   renderFields();
   renderBoxes();
@@ -142,8 +145,9 @@ $("#loadTemplateBtn").addEventListener("click", async () => {
   const id = $("#templatePicker").value;
   if (!id) return;
   const t = await fetch("/api/templates/" + id).then((r) => r.json());
-  state.editor.template = { id: t.id, name: t.name, fields: t.fields };
+  state.editor.template = { id: t.id, name: t.name, fields: t.fields, extract_mode: t.extract_mode };
   $("#templateName").value = t.name;
+  $("#templateEngine").value = t.extract_mode || "";
   renderFields();
   renderBoxes();
 });
@@ -151,6 +155,7 @@ $("#loadTemplateBtn").addEventListener("click", async () => {
 $("#saveTemplateBtn").addEventListener("click", async () => {
   const tpl = state.editor.template;
   tpl.name = $("#templateName").value.trim();
+  tpl.extract_mode = $("#templateEngine").value || undefined;
   if (!tpl.name) {
     alert("Give the template a name first.");
     return;
@@ -436,10 +441,6 @@ $("#selectAllDocs").addEventListener("click", () => {
   boxes.forEach((b) => (b.checked = !allChecked));
 });
 
-function nameFor(id) {
-  const u = state.uploads.find((x) => x.upload_id === id);
-  return u ? u.filename : id;
-}
 function showProc() {
   $("#procOverlay").classList.remove("hidden");
 }
@@ -453,6 +454,34 @@ function updateProc({ done, total, file, pulse }) {
   const bar = $("#procBar");
   bar.style.width = Math.round((done / total) * 100) + "%";
   bar.classList.toggle("pulse", !!pulse);
+}
+
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/* Extraction runs as a background job on the server; we just poll progress. */
+async function pollJob(jobId) {
+  let misses = 0;
+  for (;;) {
+    await sleep(1200);
+    let job;
+    try {
+      const r = await fetch(`/api/extract/jobs/${jobId}`);
+      if (!r.ok) throw new Error("poll failed");
+      job = await r.json();
+      misses = 0;
+    } catch {
+      // Tolerate brief network blips before giving up.
+      if (++misses >= 5) throw new Error("Lost contact with the server.");
+      continue;
+    }
+    updateProc({
+      done: job.done,
+      total: job.total,
+      file: job.current_file,
+      pulse: job.status === "running" || job.status === "queued",
+    });
+    if (job.status === "done" || job.status === "error") return job;
+  }
 }
 
 $("#runBtn").addEventListener("click", async () => {
@@ -470,34 +499,31 @@ $("#runBtn").addEventListener("click", async () => {
   $("#runBtn").classList.add("busy");
   $("#runStatus").textContent = "";
   showProc();
-  updateProc({ done: 0, total: ids.length, file: nameFor(ids[0]), pulse: true });
+  updateProc({ done: 0, total: ids.length, file: "", pulse: true });
 
-  const results = [];
   try {
-    // Process one document at a time so the progress bar reflects real work.
-    for (let i = 0; i < ids.length; i++) {
-      updateProc({ done: i, total: ids.length, file: nameFor(ids[i]), pulse: true });
-      const res = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, upload_ids: [ids[i]] }),
-      }).then((r) => {
-        if (!r.ok) return r.json().then((j) => Promise.reject(new Error(j.detail || "error")));
-        return r.json();
-      });
-      results.push(...res.results);
-      updateProc({ done: i + 1, total: ids.length, file: nameFor(ids[i]), pulse: false });
-    }
-    state.lastResults = { templateId, results };
-    renderResults(templateId, results);
-    $("#runStatus").textContent = `Done — ${results.length} document(s) extracted.`;
-  } catch (e) {
-    $("#runStatus").textContent = "Error: " + e.message;
+    const start = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ template_id: templateId, upload_ids: ids }),
+    }).then((r) => {
+      if (!r.ok) return r.json().then((j) => Promise.reject(new Error(j.detail || "error")));
+      return r.json();
+    });
+
+    const job = await pollJob(start.job_id);
+    const results = job.results || [];
     if (results.length) {
-      // Keep whatever succeeded before the failure.
       state.lastResults = { templateId, results };
       renderResults(templateId, results);
     }
+    if (job.status === "error") {
+      $("#runStatus").textContent = "Error: " + (job.error || "extraction failed");
+    } else {
+      $("#runStatus").textContent = `Done — ${results.length} document(s) extracted.`;
+    }
+  } catch (e) {
+    $("#runStatus").textContent = "Error: " + e.message;
   } finally {
     hideProc();
     $("#runBtn").classList.remove("busy");
@@ -686,6 +712,118 @@ function deleteUser(id, name) {
   adminAction(fetch(`/api/admin/users/${id}`, { method: "DELETE" }), `Deleted ${name}.`);
 }
 
+/* ---------------- monitor (admin) ---------------- */
+let monitorTimer = null;
+
+function setMonitorPolling(on) {
+  if (on) {
+    loadMonitor();
+    if (!monitorTimer) monitorTimer = setInterval(loadMonitor, 4000);
+  } else if (monitorTimer) {
+    clearInterval(monitorTimer);
+    monitorTimer = null;
+  }
+}
+
+function fmtGB(mb) {
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : mb + " MB";
+}
+
+function setMeter(barId, percent) {
+  const bar = $("#" + barId);
+  const p = Math.max(0, Math.min(100, percent || 0));
+  bar.style.width = p + "%";
+  bar.classList.toggle("warn", p >= 60 && p < 85);
+  bar.classList.toggle("crit", p >= 85);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+function setSvc(id, label, value, ok) {
+  const el = $("#" + id);
+  el.textContent = `${label}: ${value}`;
+  el.classList.toggle("ok", ok);
+  el.classList.toggle("bad", !ok);
+}
+
+function renderMonitorErrors(e) {
+  setSvc("svcFailed", "failed extractions (24 h)", e.jobs_failed_24h, e.jobs_failed_24h === 0);
+  $("#monDoneTotal").textContent = e.jobs_done_total;
+  $("#monFailTotal").textContent = e.jobs_failed_total;
+  $("#monFailTotal").classList.toggle("bad", e.jobs_failed_total > 0);
+  const wrap = $("#monErrorsWrap");
+  if (!e.recent_failures.length) {
+    wrap.innerHTML = '<p class="muted small">No failed extractions.</p>';
+    return;
+  }
+  let html = '<table class="res"><thead><tr><th>Time</th><th>User</th><th>Docs</th><th>Error</th></tr></thead><tbody>';
+  e.recent_failures.forEach((f) => {
+    html += `<tr>
+      <td>${new Date(f.time * 1000).toLocaleString()}</td>
+      <td>${esc(f.username)}</td>
+      <td>${f.documents}</td>
+      <td>${esc(f.error)}</td></tr>`;
+  });
+  wrap.innerHTML = html + "</tbody></table>";
+}
+
+async function loadMonitor() {
+  let m;
+  try {
+    const r = await fetch("/api/admin/metrics");
+    if (!r.ok) throw new Error();
+    m = await r.json();
+  } catch {
+    $("#monUpdated").textContent = "could not load metrics";
+    return;
+  }
+
+  $("#monCpuVal").textContent = m.cpu.percent.toFixed(0) + "%";
+  setMeter("monCpuBar", m.cpu.percent);
+  $("#monCpuSub").textContent = m.cpu.cores + " cores (host-wide)";
+
+  $("#monMemVal").textContent = m.memory.percent.toFixed(0) + "%";
+  setMeter("monMemBar", m.memory.percent);
+  $("#monMemSub").textContent = `${fmtGB(m.memory.used_mb)} of ${fmtGB(m.memory.total_mb)}`;
+
+  $("#monDiskVal").textContent = m.disk.percent.toFixed(0) + "%";
+  setMeter("monDiskBar", m.disk.percent);
+  $("#monDiskSub").textContent = `${fmtGB(m.disk.used_mb)} of ${fmtGB(m.disk.total_mb)}`;
+
+  const g = m.gpu;
+  if (!g.ollama_up) {
+    $("#monGpuVal").textContent = "engine down";
+    setMeter("monGpuBar", 0);
+    $("#monGpuSub").textContent = "Ollama is not reachable";
+  } else if (!g.loaded_models.length) {
+    $("#monGpuVal").textContent = "idle";
+    setMeter("monGpuBar", 0);
+    $("#monGpuSub").textContent = "no model loaded (loads on first extraction)";
+  } else {
+    const mod = g.loaded_models[0];
+    const pct = mod.size_mb ? (mod.vram_mb / mod.size_mb) * 100 : 0;
+    $("#monGpuVal").textContent = fmtGB(mod.vram_mb) + " VRAM";
+    setMeter("monGpuBar", pct);
+    $("#monGpuSub").textContent =
+      `${mod.name} — ${pct.toFixed(0)}% of model in GPU memory (${fmtGB(mod.size_mb)} total)`;
+  }
+
+  setSvc("svcDb", "database", m.services.database, m.services.database === "ok");
+  setSvc("svcOllama", "ollama", m.services.ollama, m.services.ollama === "ok");
+  setSvc("svcModel", "model", m.services.model, m.services.model === "ready");
+  renderMonitorErrors(m.errors);
+
+  $("#monActive").textContent = m.activity.active_users_5m;
+  $("#monTotalUsers").textContent = m.activity.total_users;
+  $("#monJobsRunning").textContent = m.activity.jobs_running;
+  $("#monJobsQueued").textContent = m.activity.jobs_queued;
+  $("#monUpdated").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
 /* ---------------- auth ---------------- */
 let authMode = "login"; // or "register"
 let statusTimer = null;
@@ -738,6 +876,7 @@ async function enterApp(user) {
   $("#userName").textContent = user.username;
   $("#userArea").classList.remove("hidden");
   $("#adminTab").classList.toggle("hidden", !user.is_admin);
+  $("#monitorTab").classList.toggle("hidden", !user.is_admin);
   $("#authGate").classList.add("hidden");
   $("#authUser").value = "";
   $("#authPass").value = "";
@@ -756,6 +895,12 @@ async function enterApp(user) {
       return;
     }
   } catch {}
+  try {
+    const cfg = await fetch("/api/auth-config").then((r) => r.json());
+    state.allowRegistration = !!cfg.allow_registration;
+  } catch {}
+  // Invite-only deployments hide the "Create an account" switch entirely.
+  $(".auth-switch").classList.toggle("hidden", !state.allowRegistration);
   setAuthMode("login");
   $("#authGate").classList.remove("hidden");
   $("#authUser").focus();

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LocalOCR</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=5" />
 </head>
 <body>
   <!-- ============ AUTH GATE ============ -->
@@ -36,6 +36,7 @@
       <button class="tab" data-tab="editor">2 · Template Editor</button>
       <button class="tab" data-tab="run">3 · Extract &amp; Export</button>
       <button class="tab hidden" id="adminTab" data-tab="admin">⚙ Admin</button>
+      <button class="tab hidden" id="monitorTab" data-tab="monitor">📈 Monitor</button>
     </nav>
     <div id="status" class="status" title="Engine status">checking…</div>
     <div id="userArea" class="userarea hidden">
@@ -92,6 +93,13 @@
         <div class="card">
           <label class="block">Template name
             <input id="templateName" type="text" placeholder="e.g. ACME Invoice" />
+          </label>
+          <label class="block">Extraction engine
+            <select id="templateEngine">
+              <option value="">Default (server setting)</option>
+              <option value="vlm">Standard — vision model reads the page</option>
+              <option value="thai-ocr">Thai OCR — Typhoon two-stage (best for Thai)</option>
+            </select>
           </label>
           <div class="row">
             <select id="templatePicker"><option value="">— new template —</option></select>
@@ -161,6 +169,67 @@
     </div>
   </section>
 
+  <!-- ============ MONITOR (admin) ============ -->
+  <section id="tab-monitor" class="panel">
+    <div class="card">
+      <div class="row between">
+        <h2>System performance</h2>
+        <span id="monUpdated" class="muted small"></span>
+      </div>
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-head"><span>CPU</span><span id="monCpuVal">–</span></div>
+          <div class="meter"><div id="monCpuBar" class="meter-bar"></div></div>
+          <div id="monCpuSub" class="muted small"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-head"><span>RAM</span><span id="monMemVal">–</span></div>
+          <div class="meter"><div id="monMemBar" class="meter-bar"></div></div>
+          <div id="monMemSub" class="muted small"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-head"><span>Disk (data volume)</span><span id="monDiskVal">–</span></div>
+          <div class="meter"><div id="monDiskBar" class="meter-bar"></div></div>
+          <div id="monDiskSub" class="muted small"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-head"><span>GPU · model memory</span><span id="monGpuVal">–</span></div>
+          <div class="meter"><div id="monGpuBar" class="meter-bar"></div></div>
+          <div id="monGpuSub" class="muted small"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Service status &amp; errors</h2>
+      <div class="row">
+        <span class="svc" id="svcDb">database: –</span>
+        <span class="svc" id="svcOllama">ollama: –</span>
+        <span class="svc" id="svcModel">model: –</span>
+        <span class="svc" id="svcFailed">failed extractions (24 h): –</span>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><div id="monDoneTotal" class="stat-num good">–</div><div class="muted small">extractions succeeded (total)</div></div>
+        <div class="stat"><div id="monFailTotal" class="stat-num">–</div><div class="muted small">extractions failed (total)</div></div>
+      </div>
+      <div id="monErrorsWrap" class="results-wrap"></div>
+    </div>
+
+    <div class="card">
+      <h2>Concurrent access</h2>
+      <div class="stat-grid">
+        <div class="stat"><div id="monActive" class="stat-num">–</div><div class="muted small">active users (last 5 min)</div></div>
+        <div class="stat"><div id="monTotalUsers" class="stat-num">–</div><div class="muted small">registered users</div></div>
+        <div class="stat"><div id="monJobsRunning" class="stat-num">–</div><div class="muted small">extractions running</div></div>
+        <div class="stat"><div id="monJobsQueued" class="stat-num">–</div><div class="muted small">extractions queued</div></div>
+      </div>
+      <p class="muted small">CPU and RAM are host-wide. GPU shows how much of the
+        loaded vision model resides in GPU memory (VRAM) versus system RAM — if it
+        is well below 100%, the model has spilled to CPU and extraction will be slow.
+        Refreshes every 4 seconds while this tab is open.</p>
+    </div>
+  </section>
+
   <!-- extraction progress overlay -->
   <div id="procOverlay" class="modal hidden">
     <div class="proc-box">
@@ -204,6 +273,6 @@
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

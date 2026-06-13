@@ -1,12 +1,20 @@
 name: localocr
 
+# Keep container logs bounded (json-file grows forever by default).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-localocr}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localocr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-localocr}
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -17,10 +25,36 @@ services:
       retries: 20
 
   ollama:
-    image: ollama/ollama:latest
+    # Pinned for reproducible deployments (was :latest). Update deliberately.
+    image: ollama/ollama:0.30.8
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      # --- keep models on the GPU, never spill to CPU ---
+      # Flash attention shrinks the KV cache so a full page context fits in
+      # VRAM with room to spare (also faster).
+      OLLAMA_FLASH_ATTENTION: "1"
+      # Quantize the KV cache to 8-bit — halves its VRAM cost (needs flash
+      # attention); negligible OCR-accuracy impact.
+      OLLAMA_KV_CACHE_TYPE: "q8_0"
+      # Keep both Thai-pipeline models (Typhoon + qwen) resident together so
+      # neither is evicted and reloaded (reload = CPU churn + latency).
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      # One inference per model at a time: extra parallel slots each allocate
+      # their own KV cache and are what pushes a model over VRAM onto the CPU.
+      # The job queue already serialises work and the GPU is the bottleneck.
+      OLLAMA_NUM_PARALLEL: "1"
+      # Hold models in VRAM for 30 min of idle instead of 5, so a quiet spell
+      # doesn't trigger an unload/reload cycle.
+      OLLAMA_KEEP_ALIVE: "30m"
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
     # Uncomment to reach Ollama directly from the host (e.g. to `ollama pull`):
     # ports:
     #   - "11434:11434"
@@ -37,26 +71,36 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       db:
         condition: service_healthy
       ollama:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-localocr}:${POSTGRES_PASSWORD:-localocr}@db:5432/${POSTGRES_DB:-localocr}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-localocr}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-localocr}
       OLLAMA_HOST: http://ollama:11434
       LOCALOCR_MODEL: ${LOCALOCR_MODEL:-qwen2.5vl:7b}
+      LOCALOCR_EXTRACT_MODE: ${LOCALOCR_EXTRACT_MODE:-vlm}
+      LOCALOCR_TYPHOON_MODEL: ${LOCALOCR_TYPHOON_MODEL:-scb10x/typhoon-ocr1.5-3b}
       LOCALOCR_DPI: ${LOCALOCR_DPI:-200}
+      LOCALOCR_NUM_CTX: ${LOCALOCR_NUM_CTX:-8192}
       LOCALOCR_DATA_DIR: /data
       LOCALOCR_SECRET_KEY: ${LOCALOCR_SECRET_KEY:-}
       LOCALOCR_COOKIE_SECURE: ${LOCALOCR_COOKIE_SECURE:-false}
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      LOCALOCR_ALLOW_REGISTRATION: ${LOCALOCR_ALLOW_REGISTRATION:-true}
+      LOCALOCR_MAX_UPLOAD_MB: ${LOCALOCR_MAX_UPLOAD_MB:-50}
+      LOCALOCR_USER_QUOTA_MB: ${LOCALOCR_USER_QUOTA_MB:-2048}
+      LOCALOCR_MAX_PAGES: ${LOCALOCR_MAX_PAGES:-200}
+      LOCALOCR_LOG_LEVEL: ${LOCALOCR_LOG_LEVEL:-INFO}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
     volumes:
       - file_data:/data
 
   frontend:
     build: ./frontend
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - backend
     ports:

@@ -20,10 +20,13 @@ def _zoom_for_dpi(dpi: int) -> float:
     return dpi / 72.0
 
 
-def render_document(file_path: Path, out_dir: Path, dpi: int = RENDER_DPI) -> list[dict]:
+def render_document(
+    file_path: Path, out_dir: Path, dpi: int = RENDER_DPI, max_pages: int | None = None
+) -> list[dict]:
     """Render every page of the document to page_<i>.png under out_dir.
 
     Returns metadata for each page: {index, width, height} in pixels.
+    Raises ValueError if the document exceeds max_pages.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,9 +36,21 @@ def render_document(file_path: Path, out_dir: Path, dpi: int = RENDER_DPI) -> li
     pages: list[dict] = []
     doc = fitz.open(file_path)
     try:
+        if max_pages is not None and doc.page_count > max_pages:
+            raise ValueError(
+                f"document has {doc.page_count} pages (limit is {max_pages})"
+            )
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             pix.save(out_dir / f"page_{i}.png")
+            # Save the page's text layer (empty for scans/images): Typhoon OCR
+            # uses it as anchor text to improve transcription accuracy.
+            try:
+                (out_dir / f"page_{i}.txt").write_text(
+                    page.get_text()[:4000], encoding="utf-8"
+                )
+            except Exception:
+                pass
             pages.append({"index": i, "width": pix.width, "height": pix.height})
     finally:
         doc.close()

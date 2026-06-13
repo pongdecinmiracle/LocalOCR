@@ -1,4 +1,4 @@
-"""Run extraction over uploaded documents and export results to Excel."""
+"""Queue extraction jobs, poll their progress, and export results to Excel."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,22 +7,36 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app import config, jobs
 from app.config import VISION_MODEL
 from app.deps import current_user, get_db
 from app.excel_export import export_results
-from app.extract import extract_document
 from app.models import Upload
-from app.ollama_client import OllamaError, is_up, model_ready
+from app.ollama_client import installed_models, model_in
 from app.schemas import ExportRequest, ExtractRequest
 from app.services import templates as template_svc
-from app.storage import user_exports, user_pages
+from app.storage import prune_exports, user_exports
 
 router = APIRouter(prefix="/api", tags=["extraction"])
 
 
+def _required_models(mode: str) -> list[str]:
+    models = [VISION_MODEL]
+    if mode == "thai-ocr":
+        models.append(config.TYPHOON_MODEL)
+    return models
+
+
 @router.get("/status")
 def status(user: dict = Depends(current_user)):
-    return {"ollama_up": is_up(), "model": VISION_MODEL, "model_ready": model_ready()}
+    names = installed_models()
+    return {
+        "ollama_up": names is not None,
+        "model": VISION_MODEL,
+        "mode": config.EXTRACT_MODE,
+        "model_ready": names is not None
+        and all(model_in(names, m) for m in _required_models(config.EXTRACT_MODE)),
+    }
 
 
 @router.post("/extract")
@@ -30,25 +44,39 @@ def extract(req: ExtractRequest, user: dict = Depends(current_user), db: Session
     template = template_svc.get_template(db, user["id"], req.template_id)
     if not template:
         raise HTTPException(404, "template not found")
-    if not is_up():
+
+    names = installed_models()
+    if names is None:
         raise HTTPException(503, "Ollama is not running.")
-    if not model_ready():
+    mode = template.get("extract_mode") or config.EXTRACT_MODE
+    missing = [m for m in _required_models(mode) if not model_in(names, m)]
+    if missing:
         raise HTTPException(
-            503, f"Model '{VISION_MODEL}' is not installed yet. Run: ollama pull {VISION_MODEL}"
+            503,
+            "Model(s) not installed yet: "
+            + ", ".join(missing)
+            + ". Run: "
+            + " && ".join(f"ollama pull {m}" for m in missing),
         )
 
-    results = []
-    for uid in req.upload_ids:
-        row = db.get(Upload, uid)
-        if not row or row.user_id != user["id"]:
-            continue
-        pages_dir = user_pages(user["id"]) / uid
-        try:
-            res = extract_document(pages_dir, template, VISION_MODEL)
-        except OllamaError as e:
-            raise HTTPException(502, str(e))
-        results.append({"upload_id": uid, "file": row.filename, "fields": res["fields"]})
-    return {"results": results}
+    # Only queue documents this user actually owns.
+    owned = [
+        uid
+        for uid in req.upload_ids
+        if (row := db.get(Upload, uid)) and row.user_id == user["id"]
+    ]
+    if not owned:
+        raise HTTPException(400, "No valid documents selected.")
+
+    return jobs.create_job(db, user["id"], req.template_id, owned)
+
+
+@router.get("/extract/jobs/{job_id}")
+def job_status(job_id: str, user: dict = Depends(current_user), db: Session = Depends(get_db)):
+    job = jobs.get_job(db, user["id"], job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job
 
 
 @router.post("/export")
@@ -57,6 +85,7 @@ def export(req: ExportRequest, user: dict = Depends(current_user), db: Session =
     if not template:
         raise HTTPException(404, "template not found")
     path = export_results(template, req.results, user_exports(user["id"]))
+    prune_exports(user["id"], keep=config.EXPORTS_KEEP)
     return {"url": f"/api/download/{Path(path).name}", "filename": Path(path).name}
 
 

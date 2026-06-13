@@ -41,3 +41,22 @@ def delete_upload_files(user_id: str, upload_id: str) -> None:
 
 def delete_user_files(user_id: str) -> None:
     shutil.rmtree(user_root(user_id), ignore_errors=True)
+
+
+def user_disk_usage(user_id: str) -> int:
+    """Total bytes of this user's files (uploads + rendered pages + exports)."""
+    root = user_root(user_id)
+    if not root.exists():
+        return 0
+    return sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+
+
+def prune_exports(user_id: str, keep: int) -> None:
+    """Delete all but the `keep` newest export files for a user."""
+    files = sorted(
+        (p for p in user_exports(user_id).iterdir() if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for p in files[keep:]:
+        p.unlink(missing_ok=True)

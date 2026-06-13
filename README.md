@@ -39,7 +39,14 @@ templates.
 - Passwords are hashed (PBKDF2-HMAC-SHA256, per-user salt) — never stored in
   plain text.
 - Sign-in uses a secure httpOnly session cookie that lasts 30 days, signed with
-  `LOCALOCR_SECRET_KEY`.
+  `LOCALOCR_SECRET_KEY`. Changing or resetting a password immediately
+  invalidates every existing session for that account.
+- Login is brute-force protected: nginx rate-limits `/api/login` per IP, and
+  the backend locks an account/IP pair out after 5 failed attempts.
+- Set `LOCALOCR_ALLOW_REGISTRATION=false` to make the deployment invite-only:
+  the sign-up option disappears and only admins can add accounts. The very
+  first account can always be created so a fresh install can bootstrap its
+  admin.
 - Accounts and templates are stored in PostgreSQL; per-user files live on the
   backend's data volume (see [Layout](#layout)). Both stay on your machine.
 
@@ -53,6 +60,11 @@ The **first account you create becomes the administrator**. Admins see an extra
 - **Reset** any user's password
 - **Grant or revoke** admin rights
 - **Delete** a user — this also removes all of that user's documents and templates
+
+Admins also get a **📈 Monitor** tab — a live performance page showing CPU,
+RAM, and data-volume disk usage, the vision model's GPU (VRAM) residency, and
+concurrent access (active users in the last 5 minutes, running/queued
+extraction jobs). It refreshes every few seconds while open.
 
 Safeguards prevent removing the last remaining admin or deleting your own account
 from the panel.
@@ -68,6 +80,11 @@ all the template's fields at once as structured JSON. The boxes you draw define
 *which* fields exist, their type (text / number / date / **table**), table
 columns, and a location hint that tells the model where to look. Full-page
 context is far more accurate than tiny per-field crops.
+
+Extractions run as **background jobs**: clicking *Run extraction* queues a job
+and the UI polls its progress, so long batches never tie up the web workers or
+hit request timeouts, and many users can extract at the same time — jobs are
+processed fairly in the order they were queued.
 
 ## Prerequisites
 
@@ -85,6 +102,11 @@ Install these **before** running setup:
 inside containers.
 
 ## Setup (one time)
+
+> 📘 **Step-by-step manual:** see [RUNNING.md](RUNNING.md) for a fuller guide —
+> first-time setup, daily operation, backups, LAN/team deployment, and
+> troubleshooting. For the system design and a fresh-deployment walkthrough,
+> see [REPORT.md](REPORT.md). Both available in English and ภาษาไทย.
 
 ```bash
 # 1. Configure (sets DB password, session secret, port, etc.)
@@ -186,7 +208,11 @@ only build it once per document type, then reuse it forever.
    - Click **✎** to edit its name/type/columns.
    - Click **✕** to delete it.
    - To move or resize a box, delete it and redraw.
-6. Type a **Template name** at the top right (e.g. "ACME Invoice") and click
+6. Optionally pick an **Extraction engine** for this template: *Default*
+   follows the server setting, *Standard* sends the page image straight to the
+   vision model, and *Thai OCR* runs the two-stage Typhoon pipeline — choose
+   it for Thai-language documents.
+7. Type a **Template name** at the top right (e.g. "ACME Invoice") and click
    **💾 Save template**.
 
 To edit an existing template later: choose it in the dropdown, click **Load**,
@@ -301,13 +327,23 @@ All configuration is via environment variables, set in `.env` (see
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `localocr` | Database credentials |
+| `POSTGRES_USER` / `POSTGRES_DB` | `localocr` | Database credentials |
+| `POSTGRES_PASSWORD` | _(required)_ | Database password — the stack refuses to start without it |
 | `LOCALOCR_PORT` | `8080` | Host port the app is published on |
 | `LOCALOCR_SECRET_KEY` | _(generated)_ | Secret used to sign session cookies — set a long random value in production |
 | `LOCALOCR_COOKIE_SECURE` | `false` | Set `true` when serving over HTTPS |
-| `WEB_CONCURRENCY` | `2` | Number of uvicorn workers in the backend |
+| `LOCALOCR_ALLOW_REGISTRATION` | `true` | Set `false` for invite-only (admins add users) |
+| `LOCALOCR_MAX_UPLOAD_MB` | `50` | Per-file upload size limit |
+| `LOCALOCR_USER_QUOTA_MB` | `2048` | Total storage per user (uploads + pages + exports) |
+| `LOCALOCR_MAX_PAGES` | `200` | Maximum pages per document |
+| `WEB_CONCURRENCY` | `4` | Number of uvicorn workers in the backend |
 | `LOCALOCR_MODEL` | `qwen2.5vl:7b` | Ollama vision model to use |
+| `LOCALOCR_EXTRACT_MODE` | `vlm` | `thai-ocr` enables the two-stage Thai pipeline (Typhoon OCR + LLM) — much more accurate for Thai documents |
+| `LOCALOCR_TYPHOON_MODEL` | `scb10x/typhoon-ocr1.5-3b` | Thai OCR model used by `thai-ocr` mode (pull it once into the ollama container) |
 | `LOCALOCR_DPI` | `200` | Page render resolution |
+| `LOCALOCR_NUM_CTX` | `8192` | Model context window per extraction (raise for very dense templates) |
+| `LOCALOCR_NUM_GPU` | `999` | GPU layers per request — `999` forces full GPU offload (no CPU fallback); lower only if a model exceeds your VRAM |
+| `LOCALOCR_LOG_LEVEL` | `INFO` | Backend log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 
 Internal service URLs (`DATABASE_URL`, `OLLAMA_HOST`, `LOCALOCR_DATA_DIR`) are
 wired up in `docker-compose.yml` and rarely need changing.
@@ -318,26 +354,63 @@ wired up in `docker-compose.yml` and rarely need changing.
 docker-compose.yml   defines the four services + named volumes
 .env.example         configuration template (copy to .env)
 backend/             backend service
-  Dockerfile, requirements.txt, entrypoint.sh
+  Dockerfile, requirements.txt, entrypoint.sh, alembic.ini
+  migrations/        Alembic database migrations (run on startup)
+  tests/             pytest suite (auth, uploads, jobs)
   app/
     main.py          FastAPI app (API only)
     config.py        env-driven settings
     database.py      SQLAlchemy engine/session
-    models.py        ORM: users, templates, uploads
-    security.py      password hashing + session tokens
+    migrate.py       applies migrations on startup (adopts pre-Alembic DBs)
+    models.py        ORM: users, templates, uploads, extraction_jobs
+    security.py      password hashing + versioned session tokens
     deps.py          shared FastAPI dependencies (db, current_user/admin)
+    ratelimit.py     login brute-force lockout
+    jobs.py          background extraction job queue + worker
     services/        users.py, templates.py (DB-backed logic)
     routers/         auth, admin, uploads, templates, extraction
     pdf_utils.py · extract.py · excel_export.py · ollama_client.py
 frontend/            frontend service
   Dockerfile, nginx.conf, index.html, app.js, styles.css
+scripts/             backup.sh / backup.ps1 (DB dump + files archive)
 samples/             a generated sample invoice to try
+.github/workflows/   CI: backend tests + image builds on every push/PR
 
 Persistent data lives in Docker named volumes (not in the repo):
-  db_data       PostgreSQL  — accounts, templates, upload metadata
+  db_data       PostgreSQL  — accounts, templates, upload metadata, jobs
   file_data     /data/users/<user_id>/{uploads,pages,exports}/ + secret.key
   ollama_data   the downloaded vision model
 ```
+
+## Production notes
+
+The stack ships hardened for small-team production use (10+ concurrent users):
+
+- **Background extraction** — extraction runs in a DB-backed job queue, so the
+  HTTP workers stay responsive while documents are processed; jobs from
+  different users are processed fairly in queue order.
+- **Schema migrations** — Alembic runs automatically on startup
+  (`python -m app.migrate`); databases created by older versions are adopted
+  in place, no manual steps.
+- **Rate limiting** — nginx limits `/api/login` & `/api/register` per IP; the
+  backend additionally locks out an IP/account pair after 5 failed logins.
+- **Session revocation** — password changes invalidate all existing sessions.
+- **Upload hygiene** — filenames are sanitized, file types are allowlisted,
+  and per-file/per-user/page-count limits apply (see Configuration). Old
+  exports are pruned automatically (newest 20 kept).
+- **Containers** — the backend drops to an unprivileged user, images are
+  pinned, container logs are rotated, and nginx sends standard security
+  headers (CSP, nosniff, frame deny).
+- **Backups** — run `scripts/backup.ps1` (Windows) or `scripts/backup.sh`
+  (Linux/macOS) while the stack is up: it writes a `pg_dump` of the database
+  and a tar of the user-files volume to `./backups/`. Schedule it however you
+  like (Task Scheduler / cron).
+- **Tests & CI** — `pytest backend/tests` covers auth, lockout, session
+  revocation, upload sanitization, quotas and the job queue; GitHub Actions
+  runs the suite and builds both images on every push.
+- **HTTPS** — still on you: terminate TLS in front of the `frontend` service
+  and set `LOCALOCR_COOKIE_SECURE=true` (see
+  [Reaching it from another machine](#reaching-it-from-another-machine)).
 
 ## Try it now
 

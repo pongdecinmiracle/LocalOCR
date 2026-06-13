@@ -56,6 +56,11 @@ def save_template(db: Session, user_id: str, data: dict) -> dict:
     data["created_at"] = created
     data["updated_at"] = _now()
 
+    # Optional per-template extraction engine; absent/invalid means "follow
+    # the server-wide LOCALOCR_EXTRACT_MODE default".
+    if data.get("extract_mode") not in ("vlm", "thai-ocr"):
+        data.pop("extract_mode", None)
+
     # Normalize fields (same shape the editor and extractor expect).
     norm_fields = []
     for fld in data.get("fields", []):

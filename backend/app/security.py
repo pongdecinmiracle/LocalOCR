@@ -43,22 +43,30 @@ def verify_password(password: str, hash_hex: str, salt_hex: str) -> bool:
 
 
 # ---------------- session tokens ----------------
-def create_token(user_id: str, days: int = SESSION_DAYS) -> str:
+# Tokens embed the user's token_version: bumping the version in the DB (on
+# password change/reset) invalidates every previously issued session.
+def create_token(user_id: str, token_version: int, days: int = SESSION_DAYS) -> str:
     exp = int(time.time()) + days * 86400
-    payload = f"{user_id}:{exp}"
+    payload = f"{user_id}:{token_version}:{exp}"
     sig = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
 
 
-def verify_token(token: str) -> str | None:
+def verify_token(token: str) -> tuple[str, int] | None:
+    """Return (user_id, token_version) for a valid, unexpired token."""
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
-        user_id, exp, sig = raw.split(":")
+        user_id, version, exp, sig = raw.split(":")
     except Exception:
         return None
-    expected = hmac.new(_secret(), f"{user_id}:{exp}".encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        _secret(), f"{user_id}:{version}:{exp}".encode(), hashlib.sha256
+    ).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return None
-    if int(exp) < int(time.time()):
+    try:
+        if int(exp) < int(time.time()):
+            return None
+        return user_id, int(version)
+    except ValueError:
         return None
-    return user_id

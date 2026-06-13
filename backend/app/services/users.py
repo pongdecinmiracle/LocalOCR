@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,10 @@ def _public(u: User) -> dict:
 
 def _count(db: Session) -> int:
     return db.scalar(select(func.count()).select_from(User)) or 0
+
+
+def count_users(db: Session) -> int:
+    return _count(db)
 
 
 def _admin_count(db: Session) -> int:
@@ -64,19 +68,45 @@ def create_user(db: Session, username: str, password: str, is_admin: bool = Fals
         db.rollback()
         raise ValueError("That username is already taken.")
     db.refresh(user)
-    return _public(user)
+    out = _public(user)
+    out["token_version"] = user.token_version or 0
+    return out
 
 
 def authenticate(db: Session, username: str, password: str) -> dict | None:
     user = db.scalar(select(User).where(User.username_key == (username or "").strip().lower()))
     if not user or not verify_password(password, user.password_hash, user.salt):
         return None
-    return _public(user)
+    out = _public(user)
+    out["token_version"] = user.token_version or 0
+    return out
 
 
 def get_user_by_id(db: Session, user_id: str) -> dict | None:
     user = db.get(User, user_id)
     return _public(user) if user else None
+
+
+def get_auth(db: Session, user_id: str) -> dict | None:
+    """Like get_user_by_id but includes token_version, for session validation."""
+    user = db.get(User, user_id)
+    if not user:
+        return None
+    out = _public(user)
+    out["token_version"] = user.token_version or 0
+    return out
+
+
+def touch_last_seen(db: Session, user_id: str) -> None:
+    db.execute(update(User).where(User.id == user_id).values(last_seen=int(time.time())))
+    db.commit()
+
+
+def count_active_users(db: Session, window_seconds: int = 300) -> int:
+    cutoff = int(time.time()) - window_seconds
+    return (
+        db.scalar(select(func.count()).select_from(User).where(User.last_seen >= cutoff)) or 0
+    )
 
 
 # ---------------- admin management ----------------
@@ -113,6 +143,8 @@ def set_password(db: Session, user_id: str, new_password: str) -> dict:
     if not user:
         raise ValueError("User not found.")
     user.password_hash, user.salt = hash_password(new_password)
+    # Invalidate every session issued before this password change.
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
     return _public(user)
 
