@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LocalOCR — System Design &amp; Initial Deployment Report</title>
+<style>
+  :root {
+    --ink: #1f2937;
+    --muted: #6b7280;
+    --accent: #305496;
+    --accent-soft: #e8eef7;
+    --border: #e5e7eb;
+    --code-bg: #f3f4f6;
+    --warn-bg: #fff7ed;
+    --warn-border: #fdba74;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font: 16px/1.65 "Segoe UI", "Noto Sans Thai", Tahoma, Arial, sans-serif;
+    background: #fafafa;
+  }
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    background: #fff;
+    min-height: 100vh;
+    box-shadow: 0 0 24px rgba(0,0,0,.06);
+  }
+  header.report-head {
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .doc-kicker { color: var(--muted); font-size: .85rem; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { font-size: 1.7rem; margin: .25rem 0 .5rem; color: var(--accent); }
+  h2 {
+    font-size: 1.3rem;
+    margin: 2.2rem 0 .8rem;
+    padding: .35rem .7rem;
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+  }
+  h3 { font-size: 1.08rem; margin: 1.6rem 0 .5rem; color: var(--accent); }
+  p { margin: .6rem 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: .8rem 0 1.2rem;
+    font-size: .92rem;
+  }
+  th, td { border: 1px solid var(--border); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent); color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  code {
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: .1rem .35rem;
+    font: .88em/1.5 Consolas, "Courier New", monospace;
+  }
+  pre {
+    background: #111827;
+    color: #e5e7eb;
+    border-radius: 8px;
+    padding: .9rem 1.1rem;
+    overflow-x: auto;
+    font: .85rem/1.5 Consolas, "Courier New", monospace;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  pre.diagram { background: #f8fafc; color: var(--ink); border: 1px solid var(--border); }
+  .note {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 6px;
+    padding: .6rem .9rem;
+    margin: .8rem 0;
+    font-size: .94rem;
+  }
+  ol li, ul li { margin: .3rem 0; }
+  .lang-toggle {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    gap: .5rem;
+    padding: .6rem 0;
+    background: #fff;
+  }
+  .lang-toggle button {
+    border: 1px solid var(--accent);
+    background: #fff;
+    color: var(--accent);
+    padding: .35rem 1.1rem;
+    border-radius: 999px;
+    font: inherit;
+    font-size: .9rem;
+    cursor: pointer;
+  }
+  .lang-toggle button.active { background: var(--accent); color: #fff; }
+  .lang { display: none; }
+  .lang.show { display: block; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+  @media print {
+    body { background: #fff; }
+    .page { box-shadow: none; max-width: none; padding: 0; }
+    .lang-toggle { display: none; }
+    pre { white-space: pre-wrap; }
+    h2 { break-after: avoid; }
+    table, pre { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="lang-toggle">
+  <button id="btn-en" class="active" onclick="setLang('en')">English</button>
+  <button id="btn-th" onclick="setLang('th')">ภาษาไทย</button>
+</div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section id="lang-en" class="lang show">
+
+<header class="report-head">
+  <div class="doc-kicker">Technical Report</div>
+  <h1>LocalOCR — System Design &amp; Initial Deployment</h1>
+  <p class="doc-kicker">Related: README.md (features &amp; user guide) · RUNNING.md (operation manual)</p>
+</header>
+
+<h2>Part 1 — System Design</h2>
+
+<h3>1.1 What the system does</h3>
+<p>LocalOCR is a self-hosted document data-extraction system. Users upload PDFs
+or scanned images, draw boxes over the fields they want (invoice number, date,
+totals, line-item tables), save that layout as a reusable <strong>template</strong>,
+then batch-extract those fields from any number of documents using a
+<strong>local vision language model</strong> — and export the results to Excel.
+No document or piece of data ever leaves the machine it runs on.</p>
+
+<h3>1.2 Architecture</h3>
+<p>The system is composed of four containerized services orchestrated by Docker Compose:</p>
+<pre class="diagram">
+                ┌────────────┐   /api/*   ┌───────────┐        ┌────────────┐
+  browser  ───► │  frontend  │ ─────────► │  backend  │ ─────► │     db     │
+                │  (nginx)   │            │ (FastAPI) │        │ PostgreSQL │
+                └────────────┘            └─────┬─────┘        └────────────┘
+                                                │  ┌──────────┐  ┌──────────┐
+                                                ├─►│  ollama  │  │  volume  │
+                                                │  │ (vision) │  │  /data   │
+                                                   └──────────┘  └──────────┘
+</pre>
+<table>
+  <tr><th>Service</th><th>Technology</th><th>Responsibility</th></tr>
+  <tr><td><strong>frontend</strong></td><td>nginx 1.27</td><td>Serves the single-page UI; reverse-proxies <code>/api</code> to the backend; enforces rate limits and security headers; the <strong>only</strong> published port</td></tr>
+  <tr><td><strong>backend</strong></td><td>Python 3.12 · FastAPI · uvicorn (4 workers)</td><td>Authentication, template/document management, page rendering, the extraction job queue, Excel export</td></tr>
+  <tr><td><strong>db</strong></td><td>PostgreSQL 16</td><td>Accounts, templates, upload metadata, extraction jobs</td></tr>
+  <tr><td><strong>ollama</strong></td><td>Ollama (pinned image) + <code>qwen2.5vl:7b</code></td><td>Runs the local vision model that reads the documents</td></tr>
+</table>
+<p><strong>Design rationale:</strong> each service can be scaled, restarted, upgraded,
+and health-checked independently; the database and the model runtime are standard
+off-the-shelf images; only nginx is exposed to the network, so the backend,
+database, and model are unreachable from outside the Docker network.</p>
+
+<h3>1.3 Data design</h3>
+<p>Structured data lives in PostgreSQL; bulk files live on a Docker named volume.</p>
+<table>
+  <tr><th>Table</th><th>Contents</th></tr>
+  <tr><td><code>users</code></td><td>Account, PBKDF2 password hash + per-user salt, admin flag, <code>token_version</code> (see 1.5)</td></tr>
+  <tr><td><code>templates</code></td><td>Field layout as a JSON document (boxes, types, table columns), owned per user</td></tr>
+  <tr><td><code>uploads</code></td><td>Upload metadata + per-page dimensions (JSON), owned per user</td></tr>
+  <tr><td><code>extraction_jobs</code></td><td>Job queue: status, progress, results (see 1.4)</td></tr>
+</table>
+<p><strong>File volume layout</strong> (<code>file_data</code> volume, mounted at <code>/data</code>):</p>
+<pre class="diagram">
+/data/users/&lt;user_id&gt;/
+    uploads/&lt;upload_id&gt;/&lt;original file&gt;     the uploaded document
+    pages/&lt;upload_id&gt;/page_&lt;i&gt;.png          pages rendered at LOCALOCR_DPI
+    exports/&lt;name&gt;.xlsx                     generated Excel files (newest 20 kept)
+/data/secret.key                            fallback cookie-signing key
+</pre>
+<p>Every file path is namespaced by <code>user_id</code> and every API route checks
+ownership, so users cannot see each other's documents, templates, or results.
+Three named volumes survive container rebuilds: <code>db_data</code> (database),
+<code>file_data</code> (user files), <code>ollama_data</code> (the ~6&nbsp;GB model).</p>
+
+<h3>1.4 Extraction pipeline (background job design)</h3>
+<p>Extraction is <strong>asynchronous</strong> by design — a large batch must never
+block the web tier or hit an HTTP timeout:</p>
+<ol>
+  <li><code>POST /api/extract</code> validates the template, model readiness, and
+      document ownership, then inserts a row into <code>extraction_jobs</code>
+      (status <code>queued</code>) and returns a <code>job_id</code> immediately.</li>
+  <li>Each backend worker process runs one background worker thread. Workers claim
+      queued jobs with <code>SELECT … FOR UPDATE SKIP LOCKED</code> — a safe,
+      DB-native queue that needs no extra infrastructure (no Redis/broker).</li>
+  <li>The claimed job is processed document by document; progress (<code>done</code>,
+      <code>current_file</code>, partial <code>results</code>) is committed to the DB
+      after each one.</li>
+  <li>The browser polls <code>GET /api/extract/jobs/{id}</code> (~1.2&nbsp;s interval)
+      to drive the progress bar, and renders results when the status becomes
+      <code>done</code>.</li>
+  <li>Jobs interrupted by a server restart are marked failed at boot, so clients
+      never wait on a job that no worker will finish.</li>
+</ol>
+<p>Because all job state lives in PostgreSQL, any worker process can serve the
+polling endpoint, several jobs run concurrently across processes, and jobs from
+different users are processed fairly in queue order. This is what allows
+<strong>10+ concurrent users</strong>: the four HTTP workers stay free for
+interactive requests while the model grinds through queued documents.</p>
+<p>For each page, the <strong>entire page image</strong> is sent to the vision model
+once, with a prompt listing every field on that page. The drawn boxes are not
+crops — they define which fields exist, their types, and a coarse location hint
+("top-right"). Full-page context is significantly more accurate than tight
+per-field crops, which starve the model of visual tokens.</p>
+
+<h3>1.5 Security design</h3>
+<table>
+  <tr><th>Layer</th><th>Mechanism</th></tr>
+  <tr><td>Passwords</td><td>PBKDF2-HMAC-SHA256, 200k iterations, per-user random salt</td></tr>
+  <tr><td>Sessions</td><td>HMAC-signed httpOnly cookie (30 days, <code>SameSite=Lax</code>); tokens embed a per-user <code>token_version</code> — any password change bumps it and instantly invalidates all existing sessions</td></tr>
+  <tr><td>Brute force</td><td>nginx rate-limits <code>/api/login</code> and <code>/api/register</code> per IP (10 req/min); the backend additionally locks an IP+account pair for 5 minutes after 5 failed attempts</td></tr>
+  <tr><td>Registration</td><td><code>LOCALOCR_ALLOW_REGISTRATION=false</code> makes the instance invite-only; the first-ever account is always allowed (admin bootstrap)</td></tr>
+  <tr><td>Uploads</td><td>Filenames sanitized (path-traversal safe), extension allowlist, per-file size cap, per-user storage quota, page-count cap</td></tr>
+  <tr><td>Containers</td><td>Backend drops to an unprivileged user; pinned image versions; rotated logs; nginx sends CSP / nosniff / frame-deny headers</td></tr>
+  <tr><td>Transport</td><td>HTTP within the trusted LAN; for anything beyond, a TLS reverse proxy + <code>LOCALOCR_COOKIE_SECURE=true</code> is required</td></tr>
+</table>
+
+<h3>1.6 Configuration &amp; schema management</h3>
+<p>All configuration is environment-driven via a single <code>.env</code> file —
+the same images run in dev and production. The database schema is managed by
+<strong>Alembic migrations</strong> that run automatically at container start;
+databases created by older versions are detected and adopted in place, so
+upgrades are always <code>git pull</code> + <code>docker compose up -d --build</code>
+with no manual steps.</p>
+<p>A pytest suite (auth, lockout, session revocation, upload sanitization, quotas,
+job queue) and a GitHub Actions pipeline (tests + image builds) guard regressions.</p>
+
+<h2>Part 2 — Initial Deployment on a New PC (pull → run)</h2>
+
+<h3>2.1 Prerequisites</h3>
+<ul>
+  <li><strong>Docker Desktop</strong> (Windows/macOS, WSL2 backend on Windows) or Docker Engine + Compose v2 (Linux)</li>
+  <li><strong>~12 GB free disk</strong> (6 GB model + working data)</li>
+  <li><strong>Internet for the first run only</strong> (base images + model)</li>
+  <li><em>(Optional)</em> NVIDIA GPU ≥ 6 GB VRAM — much faster extraction</li>
+</ul>
+<p>Python, Node.js, and a local Ollama install are <strong>not</strong> required.</p>
+
+<h3>2.2 Step-by-step initialization</h3>
+<pre><code># 1. Get the code
+git clone &lt;repository-url&gt;
+cd LocalOCR
+
+# 2. Create the configuration file
+cp .env.example .env            # Windows PowerShell: Copy-Item .env.example .env</code></pre>
+<p><strong>3. Edit <code>.env</code></strong> — two values are mandatory:</p>
+<table>
+  <tr><th>Variable</th><th>Value</th></tr>
+  <tr><td><code>POSTGRES_PASSWORD</code></td><td>A long random password. The stack refuses to start without it.</td></tr>
+  <tr><td><code>LOCALOCR_SECRET_KEY</code></td><td>A long random value, e.g. from <code>python -c "import secrets; print(secrets.token_hex(32))"</code></td></tr>
+</table>
+<p>Also decide now: <code>LOCALOCR_ALLOW_REGISTRATION</code> (set <code>false</code>
+for invite-only) and <code>LOCALOCR_PORT</code> (default <code>8080</code>).</p>
+<div class="note"><strong>4. CPU-only host?</strong> The compose file ships with NVIDIA
+GPU passthrough <strong>enabled</strong> for the <code>ollama</code> service. If this
+PC has no NVIDIA GPU, comment out the <code>deploy:</code> block under
+<code>ollama</code> in <code>docker-compose.yml</code> first.</div>
+<pre><code># 5. Build and start all four services
+docker compose up -d --build
+
+# 6. Download the vision model into the ollama container (one time, ~6 GB)
+docker compose exec ollama ollama pull qwen2.5vl:7b</code></pre>
+<p><strong>7. Create the administrator.</strong> Open
+<code>http://localhost:8080</code>, click <strong>Create an account</strong>, and
+sign up — <strong>the first account automatically becomes the admin</strong>. The
+engine status (top right) must read <strong>"✓ qwen2.5vl:7b ready"</strong>.</p>
+
+<h3>2.3 What happens automatically on first start</h3>
+<p>Understanding this explains why no manual initialization is needed:</p>
+<ol>
+  <li><strong>Volumes are created</strong> (<code>db_data</code>, <code>file_data</code>,
+      <code>ollama_data</code>) and PostgreSQL initializes itself with the credentials
+      from <code>.env</code>.</li>
+  <li>The backend entrypoint <strong>fixes data-volume ownership</strong> and drops to
+      an unprivileged user.</li>
+  <li><strong>Alembic migrations run</strong> (<code>python -m app.migrate</code>): on a
+      fresh database they create the full schema; on a database from an older version
+      they stamp and upgrade it in place. Jobs orphaned by a previous shutdown are
+      marked failed.</li>
+  <li>If <code>LOCALOCR_SECRET_KEY</code> is empty, a random signing key is generated
+      and persisted to the data volume.</li>
+  <li>Four uvicorn workers start, each launching one extraction worker thread.</li>
+  <li><strong>The first registered account is promoted to admin</strong> (and a safety
+      check re-promotes the oldest account if a database ever ends up with no admin).</li>
+</ol>
+
+<h3>2.4 Verification checklist</h3>
+<table>
+  <tr><th>Check</th><th>Expected</th></tr>
+  <tr><td><code>docker compose ps</code></td><td>4 services up; <code>backend</code> and <code>db</code> show <strong>healthy</strong></td></tr>
+  <tr><td><code>http://localhost:8080</code></td><td>Login screen loads</td></tr>
+  <tr><td>Engine status after login</td><td><strong>✓ qwen2.5vl:7b ready</strong></td></tr>
+  <tr><td>Upload <code>samples/sample_invoice.png</code></td><td>Thumbnail appears with page count</td></tr>
+  <tr><td><code>docker compose logs backend --tail 20</code></td><td><code>backend ready (model=qwen2.5vl:7b)</code>, no errors</td></tr>
+</table>
+
+<h3>2.5 Optional: LAN access for other machines</h3>
+<p>The app listens on <code>http://&lt;host-ip&gt;:&lt;LOCALOCR_PORT&gt;</code> already.
+On Windows hosts, allow it through the firewall (elevated PowerShell):</p>
+<pre><code>New-NetFirewallRule -DisplayName "LocalOCR" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private</code></pre>
+<p>and make sure the Wi-Fi/Ethernet network is categorized <strong>Private</strong>.
+Details, HTTPS guidance, and troubleshooting: RUNNING.md sections 4–5.</p>
+
+</section>
+
+<!-- ==================== THAI ==================== -->
+<section id="lang-th" class="lang" lang="th">
+
+<header class="report-head">
+  <div class="doc-kicker">รายงานทางเทคนิค</div>
+  <h1>LocalOCR — การออกแบบระบบและขั้นตอนการติดตั้งเริ่มต้น</h1>
+  <p class="doc-kicker">เอกสารที่เกี่ยวข้อง: README.md (คุณสมบัติและวิธีใช้งาน) · RUNNING.md (คู่มือการใช้งานประจำวัน)</p>
+</header>
+
+<h2>ส่วนที่ 1 — การออกแบบระบบ</h2>
+
+<h3>1.1 ระบบนี้ทำอะไร</h3>
+<p>LocalOCR คือระบบดึงข้อมูลจากเอกสารแบบติดตั้งใช้งานเองในเครื่อง (self-hosted)
+ผู้ใช้อัปโหลดไฟล์ PDF หรือภาพสแกน วาดกรอบครอบช่องข้อมูลที่ต้องการ (เลขที่ใบแจ้งหนี้
+วันที่ ยอดรวม ตารางรายการสินค้า) บันทึกเลย์เอาต์นั้นเป็น <strong>เทมเพลต</strong>
+ที่ใช้ซ้ำได้ แล้วสั่งดึงข้อมูลจากเอกสารจำนวนมากพร้อมกันด้วย
+<strong>โมเดล vision ที่รันในเครื่อง</strong> และส่งออกผลลัพธ์เป็น Excel —
+เอกสารและข้อมูลทุกชิ้นไม่ออกไปนอกเครื่องที่รันระบบเลย</p>
+
+<h3>1.2 สถาปัตยกรรม</h3>
+<p>ระบบประกอบด้วยเซอร์วิส 4 ตัวที่รันในคอนเทนเนอร์ ควบคุมด้วย Docker Compose:</p>
+<pre class="diagram">
+                ┌────────────┐   /api/*   ┌───────────┐        ┌────────────┐
+  เบราว์เซอร์ ──► │  frontend  │ ─────────► │  backend  │ ─────► │     db     │
+                │  (nginx)   │            │ (FastAPI) │        │ PostgreSQL │
+                └────────────┘            └─────┬─────┘        └────────────┘
+                                                │  ┌──────────┐  ┌──────────┐
+                                                ├─►│  ollama  │  │  volume  │
+                                                │  │ (vision) │  │  /data   │
+                                                   └──────────┘  └──────────┘
+</pre>
+<table>
+  <tr><th>เซอร์วิส</th><th>เทคโนโลยี</th><th>หน้าที่</th></tr>
+  <tr><td><strong>frontend</strong></td><td>nginx 1.27</td><td>เสิร์ฟหน้าเว็บ (SPA); reverse-proxy <code>/api</code> ไปยัง backend; ทำ rate limit และ security headers; เป็นพอร์ต<strong>เดียว</strong>ที่เปิดสู่ภายนอก</td></tr>
+  <tr><td><strong>backend</strong></td><td>Python 3.12 · FastAPI · uvicorn (4 workers)</td><td>ยืนยันตัวตน จัดการเทมเพลต/เอกสาร เรนเดอร์หน้าเอกสาร คิวงานดึงข้อมูล ส่งออก Excel</td></tr>
+  <tr><td><strong>db</strong></td><td>PostgreSQL 16</td><td>บัญชีผู้ใช้ เทมเพลต ข้อมูลไฟล์ และงานในคิว</td></tr>
+  <tr><td><strong>ollama</strong></td><td>Ollama (ตรึงเวอร์ชัน image) + <code>qwen2.5vl:7b</code></td><td>รันโมเดล vision ที่อ่านเอกสาร</td></tr>
+</table>
+<p><strong>เหตุผลการออกแบบ:</strong> แต่ละเซอร์วิสสามารถขยาย รีสตาร์ต อัปเกรด
+และตรวจสุขภาพแยกจากกันได้ ฐานข้อมูลและตัวรันโมเดลใช้ image มาตรฐาน และมีเพียง
+nginx เท่านั้นที่เข้าถึงได้จากเครือข่าย — backend, ฐานข้อมูล และโมเดล
+เข้าถึงจากภายนอก Docker network ไม่ได้</p>
+
+<h3>1.3 การออกแบบข้อมูล</h3>
+<p>ข้อมูลเชิงโครงสร้างเก็บใน PostgreSQL ส่วนไฟล์ขนาดใหญ่เก็บบน Docker named volume</p>
+<table>
+  <tr><th>ตาราง</th><th>เก็บอะไร</th></tr>
+  <tr><td><code>users</code></td><td>บัญชี, รหัสผ่านแฮชแบบ PBKDF2 + salt รายผู้ใช้, สถานะแอดมิน, <code>token_version</code> (ดู 1.5)</td></tr>
+  <tr><td><code>templates</code></td><td>เลย์เอาต์ช่องข้อมูลเป็นเอกสาร JSON (กรอบ ชนิด คอลัมน์ตาราง) แยกตามเจ้าของ</td></tr>
+  <tr><td><code>uploads</code></td><td>ข้อมูลไฟล์ที่อัปโหลด + ขนาดของแต่ละหน้า (JSON) แยกตามเจ้าของ</td></tr>
+  <tr><td><code>extraction_jobs</code></td><td>คิวงาน: สถานะ ความคืบหน้า ผลลัพธ์ (ดู 1.4)</td></tr>
+</table>
+<p><strong>โครงสร้างไฟล์บน volume</strong> (<code>file_data</code> ติดตั้งที่ <code>/data</code>):</p>
+<pre class="diagram">
+/data/users/&lt;user_id&gt;/
+    uploads/&lt;upload_id&gt;/&lt;ไฟล์ต้นฉบับ&gt;        เอกสารที่อัปโหลด
+    pages/&lt;upload_id&gt;/page_&lt;i&gt;.png           หน้าที่เรนเดอร์ตาม LOCALOCR_DPI
+    exports/&lt;ชื่อ&gt;.xlsx                      ไฟล์ Excel (เก็บ 20 ไฟล์ล่าสุด)
+/data/secret.key                             กุญแจเซ็นคุกกี้ (กรณีไม่ตั้งใน .env)
+</pre>
+<p>ทุกเส้นทางไฟล์แยกตาม <code>user_id</code> และทุก API ตรวจสอบความเป็นเจ้าของ
+ผู้ใช้จึงมองไม่เห็นเอกสาร เทมเพลต หรือผลลัพธ์ของกันและกัน
+Named volume สามตัวคงอยู่แม้ build คอนเทนเนอร์ใหม่: <code>db_data</code> (ฐานข้อมูล),
+<code>file_data</code> (ไฟล์ผู้ใช้), <code>ollama_data</code> (โมเดล ~6&nbsp;GB)</p>
+
+<h3>1.4 ขั้นตอนการดึงข้อมูล (การออกแบบงานเบื้องหลัง)</h3>
+<p>การดึงข้อมูลถูกออกแบบให้เป็นแบบ <strong>asynchronous</strong> — งานชุดใหญ่ต้องไม่บล็อก
+เว็บเซิร์ฟเวอร์หรือชน HTTP timeout:</p>
+<ol>
+  <li><code>POST /api/extract</code> ตรวจสอบเทมเพลต ความพร้อมของโมเดล
+      และความเป็นเจ้าของเอกสาร แล้วเพิ่มแถวลงตาราง <code>extraction_jobs</code>
+      (สถานะ <code>queued</code>) และคืน <code>job_id</code> ทันที</li>
+  <li>โปรเซส backend แต่ละตัวรัน worker thread เบื้องหลังหนึ่งเส้น ซึ่งจองงานจากคิวด้วย
+      <code>SELECT … FOR UPDATE SKIP LOCKED</code> — คิวที่ปลอดภัยในตัวฐานข้อมูลเอง
+      ไม่ต้องมีโครงสร้างพื้นฐานเพิ่ม (ไม่ต้องใช้ Redis/broker)</li>
+  <li>งานที่จองแล้วถูกประมวลผลทีละเอกสาร และบันทึกความคืบหน้า (<code>done</code>,
+      <code>current_file</code>, ผลลัพธ์บางส่วน) ลงฐานข้อมูลหลังจบแต่ละเอกสาร</li>
+  <li>เบราว์เซอร์ poll <code>GET /api/extract/jobs/{id}</code> (ทุก ~1.2 วินาที)
+      เพื่ออัปเดตแถบความคืบหน้า และแสดงผลเมื่อสถานะเป็น <code>done</code></li>
+  <li>งานที่ค้างจากการรีสตาร์ตเซิร์ฟเวอร์จะถูกทำเครื่องหมายว่าล้มเหลวตอนบูต
+      ผู้ใช้จึงไม่ต้องรองานที่ไม่มีใครทำต่อ</li>
+</ol>
+<p>เนื่องจากสถานะงานทั้งหมดอยู่ใน PostgreSQL โปรเซสใดก็ตอบ endpoint สำหรับ poll ได้
+งานหลายงานรันพร้อมกันข้ามโปรเซสได้ และงานของผู้ใช้แต่ละคนถูกประมวลผลอย่างยุติธรรม
+ตามลำดับคิว — นี่คือสิ่งที่ทำให้รองรับ <strong>ผู้ใช้พร้อมกัน 10+ คน</strong>:
+HTTP workers ทั้งสี่ยังว่างรับคำขอปกติ ขณะที่โมเดลทยอยประมวลผลเอกสารในคิว</p>
+<p>ในแต่ละหน้า ระบบส่ง <strong>ภาพทั้งหน้า</strong> ให้โมเดล vision ครั้งเดียว
+พร้อม prompt ที่ระบุทุกช่องข้อมูลบนหน้านั้น กรอบที่วาดไม่ใช่การครอปภาพ —
+แต่เป็นตัวกำหนดว่ามีช่องอะไรบ้าง ชนิดอะไร และคำใบ้ตำแหน่งคร่าว ๆ ("มุมขวาบน")
+เพราะบริบทเต็มหน้าแม่นยำกว่าการครอปแคบ ๆ ทีละช่องอย่างมีนัยสำคัญ</p>
+
+<h3>1.5 การออกแบบด้านความปลอดภัย</h3>
+<table>
+  <tr><th>ชั้น</th><th>กลไก</th></tr>
+  <tr><td>รหัสผ่าน</td><td>PBKDF2-HMAC-SHA256 จำนวน 200,000 รอบ พร้อม salt สุ่มรายผู้ใช้</td></tr>
+  <tr><td>เซสชัน</td><td>คุกกี้ httpOnly เซ็นด้วย HMAC (30 วัน, <code>SameSite=Lax</code>); โทเคนฝัง <code>token_version</code> ของผู้ใช้ — เปลี่ยนรหัสผ่านเมื่อใด เซสชันเดิมทั้งหมดใช้ไม่ได้ทันที</td></tr>
+  <tr><td>ป้องกันเดารหัสผ่าน</td><td>nginx จำกัด <code>/api/login</code> และ <code>/api/register</code> ต่อ IP (10 ครั้ง/นาที); backend ล็อกคู่ IP+บัญชี 5 นาทีหลังพลาด 5 ครั้ง</td></tr>
+  <tr><td>การสมัครสมาชิก</td><td><code>LOCALOCR_ALLOW_REGISTRATION=false</code> ทำให้เป็นระบบเชิญเท่านั้น; บัญชีแรกสุดสร้างได้เสมอ (bootstrap แอดมิน)</td></tr>
+  <tr><td>การอัปโหลด</td><td>ชื่อไฟล์ถูก sanitize (กัน path traversal), allowlist นามสกุลไฟล์, จำกัดขนาดต่อไฟล์, โควตาต่อผู้ใช้, จำกัดจำนวนหน้า</td></tr>
+  <tr><td>คอนเทนเนอร์</td><td>backend รันด้วยผู้ใช้ไร้สิทธิพิเศษ; ตรึงเวอร์ชัน image; log หมุนเวียนอัตโนมัติ; nginx ส่ง CSP / nosniff / frame-deny headers</td></tr>
+  <tr><td>การรับส่งข้อมูล</td><td>HTTP ภายใน LAN ที่เชื่อถือได้; ถ้าเกินกว่านั้นต้องมี TLS reverse proxy + <code>LOCALOCR_COOKIE_SECURE=true</code></td></tr>
+</table>
+
+<h3>1.6 การจัดการค่าตั้งค่าและ schema</h3>
+<p>ค่าตั้งค่าทั้งหมดขับเคลื่อนด้วย environment variables ผ่านไฟล์ <code>.env</code>
+ไฟล์เดียว — image ชุดเดียวกันใช้ได้ทั้ง dev และ production ส่วน schema ของฐานข้อมูล
+จัดการด้วย <strong>Alembic migrations</strong> ที่รันอัตโนมัติตอนคอนเทนเนอร์เริ่มทำงาน
+ฐานข้อมูลจากเวอร์ชันเก่าจะถูกตรวจจับและอัปเกรดให้เอง การอัปเดตระบบจึงเหลือแค่
+<code>git pull</code> + <code>docker compose up -d --build</code> โดยไม่มีขั้นตอน manual</p>
+<p>มีชุดทดสอบ pytest (ยืนยันตัวตน การล็อกเอาต์ การเพิกถอนเซสชัน การ sanitize
+ไฟล์อัปโหลด โควตา คิวงาน) และ GitHub Actions (รันเทสต์ + build image)
+คอยป้องกัน regression</p>
+
+<h2>ส่วนที่ 2 — การติดตั้งเริ่มต้นบนเครื่องใหม่ (pull → run)</h2>
+
+<h3>2.1 สิ่งที่ต้องมีก่อน</h3>
+<ul>
+  <li><strong>Docker Desktop</strong> (Windows/macOS ใช้ WSL2 backend บน Windows) หรือ Docker Engine + Compose v2 (Linux)</li>
+  <li><strong>พื้นที่ดิสก์ว่าง ~12 GB</strong> (โมเดล 6 GB + ข้อมูลใช้งาน)</li>
+  <li><strong>อินเทอร์เน็ตเฉพาะครั้งแรก</strong> (ดาวน์โหลด image และโมเดล)</li>
+  <li><em>(ไม่บังคับ)</em> การ์ดจอ NVIDIA VRAM ≥ 6 GB — ดึงข้อมูลเร็วขึ้นมาก</li>
+</ul>
+<p><strong>ไม่ต้อง</strong>ติดตั้ง Python, Node.js หรือ Ollama บนเครื่อง</p>
+
+<h3>2.2 ขั้นตอนการติดตั้งทีละขั้น</h3>
+<pre><code># 1. ดึงโค้ด
+git clone &lt;repository-url&gt;
+cd LocalOCR
+
+# 2. สร้างไฟล์ค่าตั้งค่า
+cp .env.example .env            # Windows PowerShell: Copy-Item .env.example .env</code></pre>
+<p><strong>3. แก้ไข <code>.env</code></strong> — สองค่านี้บังคับต้องตั้ง:</p>
+<table>
+  <tr><th>ตัวแปร</th><th>ค่า</th></tr>
+  <tr><td><code>POSTGRES_PASSWORD</code></td><td>รหัสผ่านสุ่มที่ยาว — ระบบไม่ยอมเริ่มทำงานถ้าไม่ตั้ง</td></tr>
+  <tr><td><code>LOCALOCR_SECRET_KEY</code></td><td>ค่าสุ่มที่ยาว เช่นจาก <code>python -c "import secrets; print(secrets.token_hex(32))"</code></td></tr>
+</table>
+<p>ควรตัดสินใจตอนนี้ด้วย: <code>LOCALOCR_ALLOW_REGISTRATION</code> (ตั้ง
+<code>false</code> ถ้าต้องการระบบเชิญเท่านั้น) และ <code>LOCALOCR_PORT</code>
+(ค่าเริ่มต้น <code>8080</code>)</p>
+<div class="note"><strong>4. เครื่องไม่มีการ์ดจอ NVIDIA?</strong> ไฟล์ compose
+เปิดใช้ GPU passthrough สำหรับเซอร์วิส <code>ollama</code> ไว้แล้ว
+ถ้าเครื่องนี้ไม่มีการ์ดจอ NVIDIA ให้คอมเมนต์บล็อก <code>deploy:</code>
+ใต้ <code>ollama</code> ใน <code>docker-compose.yml</code> ออกก่อน</div>
+<pre><code># 5. Build และเริ่มเซอร์วิสทั้งสี่
+docker compose up -d --build
+
+# 6. ดาวน์โหลดโมเดลเข้าคอนเทนเนอร์ ollama (ครั้งเดียว ~6 GB)
+docker compose exec ollama ollama pull qwen2.5vl:7b</code></pre>
+<p><strong>7. สร้างบัญชีผู้ดูแลระบบ</strong> — เปิด <code>http://localhost:8080</code>
+คลิก <strong>Create an account</strong> แล้วสมัคร —
+<strong>บัญชีแรกจะเป็นแอดมินโดยอัตโนมัติ</strong> สถานะเครื่องมือ (มุมขวาบน)
+ต้องขึ้นว่า <strong>"✓ qwen2.5vl:7b ready"</strong></p>
+
+<h3>2.3 สิ่งที่เกิดขึ้นอัตโนมัติตอนเริ่มครั้งแรก</h3>
+<p>เข้าใจส่วนนี้แล้วจะเห็นว่าทำไมจึงไม่ต้องมีขั้นตอน initialize ด้วยมือ:</p>
+<ol>
+  <li><strong>Volume ถูกสร้าง</strong> (<code>db_data</code>, <code>file_data</code>,
+      <code>ollama_data</code>) และ PostgreSQL ตั้งค่าตัวเองด้วยข้อมูลจาก <code>.env</code></li>
+  <li>Entrypoint ของ backend <strong>แก้สิทธิ์ความเป็นเจ้าของ data volume</strong>
+      แล้วสลับไปรันด้วยผู้ใช้ไร้สิทธิพิเศษ</li>
+  <li><strong>Alembic migrations รัน</strong> (<code>python -m app.migrate</code>):
+      ฐานข้อมูลใหม่จะถูกสร้าง schema ครบชุด ส่วนฐานข้อมูลจากเวอร์ชันเก่าจะถูก stamp
+      และอัปเกรดให้ในที่ งานที่ค้างจากการปิดเครื่องครั้งก่อนถูกทำเครื่องหมายว่าล้มเหลว</li>
+  <li>ถ้า <code>LOCALOCR_SECRET_KEY</code> ว่าง ระบบจะสุ่มกุญแจเซ็นคุกกี้และบันทึกลง volume</li>
+  <li>uvicorn workers สี่ตัวเริ่มทำงาน แต่ละตัวมี worker thread สำหรับงานดึงข้อมูล</li>
+  <li><strong>บัญชีแรกที่สมัครถูกยกเป็นแอดมิน</strong> (และมีกลไกสำรอง:
+      ถ้าฐานข้อมูลไม่มีแอดมินเลย บัญชีที่เก่าที่สุดจะถูกยกเป็นแอดมินให้)</li>
+</ol>
+
+<h3>2.4 รายการตรวจสอบหลังติดตั้ง</h3>
+<table>
+  <tr><th>ตรวจ</th><th>ผลที่ควรได้</th></tr>
+  <tr><td><code>docker compose ps</code></td><td>เซอร์วิสทั้ง 4 ตัวรันอยู่; <code>backend</code> และ <code>db</code> ขึ้น <strong>healthy</strong></td></tr>
+  <tr><td><code>http://localhost:8080</code></td><td>หน้าจอล็อกอินแสดงขึ้น</td></tr>
+  <tr><td>สถานะเครื่องมือหลังล็อกอิน</td><td><strong>✓ qwen2.5vl:7b ready</strong></td></tr>
+  <tr><td>อัปโหลด <code>samples/sample_invoice.png</code></td><td>รูปย่อปรากฏพร้อมจำนวนหน้า</td></tr>
+  <tr><td><code>docker compose logs backend --tail 20</code></td><td>มี <code>backend ready (model=qwen2.5vl:7b)</code> และไม่มี error</td></tr>
+</table>
+
+<h3>2.5 เพิ่มเติม: เปิดให้เครื่องอื่นใน LAN เข้าถึง</h3>
+<p>แอปเปิดรับที่ <code>http://&lt;ip-เครื่องโฮสต์&gt;:&lt;LOCALOCR_PORT&gt;</code> อยู่แล้ว
+บนเครื่อง Windows ต้องอนุญาตพอร์ตผ่านไฟร์วอลล์ (PowerShell แบบ Run as administrator):</p>
+<pre><code>New-NetFirewallRule -DisplayName "LocalOCR" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private</code></pre>
+<p>และตรวจว่าเครือข่าย Wi-Fi/Ethernet ถูกจัดเป็นประเภท <strong>Private</strong>
+รายละเอียด คำแนะนำ HTTPS และการแก้ปัญหา: RUNNING.md หัวข้อ 4–5</p>
+
+</section>
+
+<footer>
+  LocalOCR — System Design &amp; Initial Deployment Report ·
+  Markdown source: REPORT.md · See also README.md, RUNNING.md
+</footer>
+
+</div>
+<script>
+  function setLang(l) {
+    document.getElementById("lang-en").classList.toggle("show", l === "en");
+    document.getElementById("lang-th").classList.toggle("show", l === "th");
+    document.getElementById("btn-en").classList.toggle("active", l === "en");
+    document.getElementById("btn-th").classList.toggle("active", l === "th");
+    document.documentElement.lang = l;
+  }
+</script>
+</body>
+</html>
